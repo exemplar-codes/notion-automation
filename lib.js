@@ -1,7 +1,7 @@
 const notion = require("./setup.js");
 
 const updateRows = async (
-  rowWork = console.log,
+  rowWork = async (...args) => console.log(...args),
   limit = process.env.ROW_LIMIT || Infinity,
   interval = process.env.RATE_LIMITING_INTERVAL
 ) => {
@@ -46,4 +46,4 @@ const updateRows = async (
   }
 };
 
-module.exports = updateRows;
+module.exports = { traverseRows };
