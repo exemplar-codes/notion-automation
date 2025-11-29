@@ -1,4 +1,4 @@
-const notion = require("./setup.js");
+const notion = require("./setup.js").notion;
 
 const updateRows = async (
   rowWork = async (...args) => console.log(...args),

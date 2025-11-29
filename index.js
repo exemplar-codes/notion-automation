@@ -1,5 +1,5 @@
 // Initializing a client
-const notion = require("./setup.js");
+const notion = require("./setup.js").notion;
 const { traverseRows } = require("./lib.js");
 
 async function updateURLCopyLink(row, i, response) {
