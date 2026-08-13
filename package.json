@@ -4,12 +4,14 @@
   "main": "index.js",
   "scripts": {
     "start": "node --env-file=.env .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "migrate:session-url": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js",
+    "migrate:session-url:apply": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js --apply",
+    "migrate:session-url:verify": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js --verify"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Manual automations for Notion",
   "dependencies": {
     "@notionhq/client": "^2.2.15",
     "dotenv": "^17.2.3",
