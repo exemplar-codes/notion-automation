@@ -1,35 +1,32 @@
-require("dotenv").config();
+require("dotenv").config({ override: true });
 
 const { Client } = require("@notionhq/client");
-
-// Initializing a client
-const notion = new Client({
-  auth: process.env.NOTION_TOKEN,
-});
-
-module.exports.notion = notion;
-
-// logger
-
 const winston = require("winston");
 
+const token =
+  process.env.NOTION_API_TOKEN ||
+  process.env.NOTION_TOKEN ||
+  process.env.NOTION_API_KEY;
+
+if (!token) {
+  console.error(
+    "Missing NOTION_API_TOKEN (or NOTION_TOKEN / NOTION_API_KEY). Usually already in the shell via ~/.zshrc / ~/.env — or copy .env.example → .env"
+  );
+  process.exit(1);
+}
+
+const notion = new Client({ auth: token });
+
 const logger = winston.createLogger({
-  level: "info", // Set the default log level
+  level: "info",
   format: winston.format.combine(
     winston.format.timestamp(),
-    winston.format.json() // Log in JSON format
+    winston.format.json()
   ),
   transports: [
-    new winston.transports.File({ filename: "error.log", level: "error" }), // Log errors to error.log
-    new winston.transports.File({ filename: "combined.log" }), // Log all levels to combined.log
+    new winston.transports.File({ filename: "error.log", level: "error" }),
+    new winston.transports.File({ filename: "combined.log" }),
   ],
 });
 
-function loggerExample() {
-  // Example usage
-  logger.info("This is an informational message.");
-  logger.warn("This is a warning message.");
-  logger.error("This is an error message.");
-}
-
-module.exports = { notion, logger, loggerExample };
+module.exports = { notion, logger };
