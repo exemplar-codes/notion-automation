@@ -7,15 +7,12 @@
  * Idempotency: successful writes set Tags += "session_url_done". Re-runs skip those.
  * Conflicts (both set and differ): skip — do not overwrite, do not tag.
  *
- * Usage (do not run until asked):
- *   pnpm i
- *   # NOTION_API_TOKEN is usually already in the shell via ~/.zshrc / ~/.env
- *   # optional: cp .env.example .env for local overrides
- *   # share content-db with the integration first
+ * Usage:
  *   node migrations/2026-08-13-content-db-session-url-to-url.js
  *   node migrations/2026-08-13-content-db-session-url-to-url.js --apply
  *   node migrations/2026-08-13-content-db-session-url-to-url.js --verify
  *   node migrations/2026-08-13-content-db-session-url-to-url.js --delete-property
+ *   … add --verbose for per-row titles / conflict URLs / report path
  */
 
 const fs = require("node:fs/promises");
@@ -35,6 +32,23 @@ const args = new Set(process.argv.slice(2));
 const APPLY = args.has("--apply");
 const VERIFY = args.has("--verify");
 const DELETE_PROPERTY = args.has("--delete-property");
+const VERBOSE = args.has("--verbose") || args.has("-v");
+
+const mode = DELETE_PROPERTY
+  ? "delete-property"
+  : APPLY
+    ? "apply"
+    : VERIFY
+      ? "verify"
+      : "dry-run";
+
+function log(...parts) {
+  console.log(...parts);
+}
+
+function verbose(...parts) {
+  if (VERBOSE) console.log(...parts);
+}
 
 function titleOf(page) {
   const t = page.properties?.Name?.title;
@@ -84,6 +98,17 @@ function summarize(rows) {
   return counts;
 }
 
+function formatCounts(counts, total) {
+  return [
+    `mode=${mode}`,
+    `copy=${counts.copy}`,
+    `skip-same=${counts["skip-same"]}`,
+    `skip-done=${counts["skip-done"]}`,
+    `conflict=${counts.conflict}`,
+    `total=${total}`,
+  ].join(" ");
+}
+
 async function ensureDbAccess() {
   try {
     const db = await notion.databases.retrieve({ database_id: DATABASE_ID });
@@ -111,32 +136,26 @@ async function ensureDbAccess() {
     return db;
   } catch (err) {
     if (err.code === "object_not_found" || err.status === 404) {
-      console.error(`
-Cannot access content-db with this integration.
-
-Share the database with your Notion integration:
-  1. Open https://www.notion.so/${DATABASE_ID.replace(/-/g, "")}
-  2. ••• → Connections → Connect to → your integration
-
-Then re-run this script.
-`);
+      console.error(
+        `Cannot access content-db. Share it with your integration: https://www.notion.so/${DATABASE_ID.replace(/-/g, "")}`
+      );
     }
     throw err;
   }
 }
 
 /** Aggregate-only — safe to commit / push (no titles, URLs, or page ids). */
-async function writeReport(counts, mode) {
+async function writeReport(counts, modeName) {
   const dir = path.join(__dirname, "..", "reports");
   await fs.mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const file = path.join(dir, `${stamp}-${mode}.json`);
+  const file = path.join(dir, `${stamp}-${modeName}.json`);
   await fs.writeFile(
     file,
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
-        mode,
+        mode: modeName,
         databaseId: DATABASE_ID,
         doneTag: DONE_TAG,
         counts: {
@@ -168,7 +187,7 @@ async function applyCopies(copyRows) {
         [TAGS_PROP]: tagsPayloadWithDone(row.tags),
       },
     });
-    console.log(`  copied+tagged → ${row.name}`);
+    verbose(`  copied+tagged → ${row.name}`);
     await sleep(INTERVAL);
   }
 }
@@ -181,7 +200,7 @@ async function tagSkipSame(rows) {
         [TAGS_PROP]: tagsPayloadWithDone(row.tags),
       },
     });
-    console.log(`  tagged skip-same → ${row.name}`);
+    verbose(`  tagged skip-same → ${row.name}`);
     await sleep(INTERVAL);
   }
 }
@@ -196,14 +215,7 @@ async function deleteSessionUrlProperty() {
 }
 
 async function main() {
-  console.log(
-    `Mode: ${
-      DELETE_PROPERTY ? "delete-property" : APPLY ? "apply" : VERIFY ? "verify" : "dry-run"
-    }`
-  );
-
   await ensureDbAccess();
-  console.log("content-db accessible ✓");
 
   const pages = await traverseRows({
     databaseId: DATABASE_ID,
@@ -222,61 +234,43 @@ async function main() {
   }));
 
   const counts = summarize(rows);
-  console.log("\nClassification:");
-  console.log(`  copy         ${counts.copy}`);
-  console.log(`  skip-same    ${counts["skip-same"]}`);
-  console.log(`  skip-done    ${counts["skip-done"]}  (tag: ${DONE_TAG})`);
-  console.log(`  conflict     ${counts.conflict}`);
-  console.log(`  total w/ session_url  ${pages.length}`);
+  log(formatCounts(counts, pages.length));
 
-  if (counts.conflict > 0) {
-    console.log("\nConflicts (skipped — URL left as-is, not tagged):");
+  if (VERBOSE && counts.conflict > 0) {
+    verbose("conflicts:");
     for (const r of rows.filter((x) => x.action === "conflict")) {
-      console.log(`  - ${r.name}`);
-      console.log(`      URL:         ${r.url}`);
-      console.log(`      session_url: ${r.sessionUrl}`);
+      verbose(`  ${r.name}`);
+      verbose(`    URL=${r.url}`);
+      verbose(`    session_url=${r.sessionUrl}`);
     }
+  } else if (counts.conflict > 0) {
+    log(`conflict_titles_hidden (pass --verbose)`);
   }
 
-  const mode = DELETE_PROPERTY
-    ? "delete-property"
-    : APPLY
-      ? "apply"
-      : VERIFY
-        ? "verify"
-        : "dry-run";
   const reportPath = await writeReport(counts, mode);
-  console.log(`\nReport: ${reportPath}`);
+  verbose(`report=${reportPath}`);
 
   if (VERIFY) {
     if (counts.copy > 0) {
-      console.error(`\nVERIFY FAILED: ${counts.copy} untagged row(s) still need copy.`);
+      console.error(`VERIFY FAILED: copy=${counts.copy}`);
       process.exit(1);
     }
-    console.log("\nVERIFY OK: no untagged rows need copy.");
+    log("VERIFY OK");
     return;
   }
 
   if (DELETE_PROPERTY) {
     if (counts.copy > 0) {
-      console.error(
-        `\nRefusing --delete-property: ${counts.copy} row(s) still need copy. Run --apply first.`
-      );
+      console.error(`Refusing --delete-property: copy=${counts.copy}`);
       process.exit(1);
     }
-    if (counts.conflict > 0) {
-      console.log(
-        `\nNote: ${counts.conflict} conflict row(s) will lose session_url data (URL kept).`
-      );
-    }
-    console.log("\nDeleting session_url property…");
     await deleteSessionUrlProperty();
-    console.log("Deleted session_url ✓");
+    log("deleted session_url property");
     return;
   }
 
   if (!APPLY) {
-    console.log("\nDry-run only. Re-run with --apply to copy+tag, then --delete-property.");
+    log("dry-run (pass --apply to write)");
     return;
   }
 
@@ -285,30 +279,21 @@ async function main() {
   let toTagSame = rows.filter((r) => r.action === "skip-same");
 
   if (Number.isFinite(rowLimit)) {
-    console.log(`ROW_LIMIT=${rowLimit} — capping apply work`);
+    verbose(`ROW_LIMIT=${rowLimit}`);
     toCopy = toCopy.slice(0, rowLimit);
     const remaining = Math.max(0, rowLimit - toCopy.length);
     toTagSame = toTagSame.slice(0, remaining);
   }
 
   if (toCopy.length === 0 && toTagSame.length === 0) {
-    console.log("\nNothing to apply (all done, conflict-only, or empty).");
+    log("nothing to apply");
     return;
   }
 
-  if (toCopy.length > 0) {
-    console.log(`\nApplying ${toCopy.length} copy+tag…`);
-    await applyCopies(toCopy);
-  }
+  if (toCopy.length > 0) await applyCopies(toCopy);
+  if (toTagSame.length > 0) await tagSkipSame(toTagSame);
 
-  if (toTagSame.length > 0) {
-    console.log(`\nTagging ${toTagSame.length} skip-same as ${DONE_TAG}…`);
-    await tagSkipSame(toTagSame);
-  }
-
-  console.log(
-    "Done. Safe to re-run --apply (skips session_url_done). Then run with --verify."
-  );
+  log(`applied copy=${toCopy.length} tag-same=${toTagSame.length}`);
 }
 
 main().catch((err) => {

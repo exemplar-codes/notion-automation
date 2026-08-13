@@ -28,9 +28,10 @@ Share the target database with your Notion integration before running anything.
 From a shell that has sourced `~/.zshrc` (so `NOTION_API_TOKEN` is set), or with a local `.env`:
 
 ```sh
-node --env-file=.env migrations/<file>.js            # dry-run
+node --env-file=.env migrations/<file>.js            # dry-run (quiet summary)
 node --env-file=.env migrations/<file>.js --apply
 node --env-file=.env migrations/<file>.js --verify
+node --env-file=.env migrations/<file>.js --apply --verbose   # per-row titles
 # or, if token is already exported:
 node migrations/<file>.js
 ```
