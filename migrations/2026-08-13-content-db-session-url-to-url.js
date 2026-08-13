@@ -114,26 +114,19 @@ async function ensureDbAccess() {
     const db = await notion.databases.retrieve({ database_id: DATABASE_ID });
     const props = db.properties || {};
 
-    for (const name of [SESSION_URL_PROP, URL_PROP]) {
-      if (!props[name]) {
-        throw new Error(
-          `Database missing property "${name}". Found: ${Object.keys(props).join(", ")}`
-        );
-      }
-      if (props[name].type !== "url") {
-        throw new Error(
-          `Property "${name}" is type "${props[name].type}", expected "url"`
-        );
-      }
+    if (!props[URL_PROP] || props[URL_PROP].type !== "url") {
+      throw new Error(`Database missing url property "${URL_PROP}"`);
     }
-
     if (!props[TAGS_PROP] || props[TAGS_PROP].type !== "multi_select") {
       throw new Error(
         `Database missing multi_select property "${TAGS_PROP}" (needed for ${DONE_TAG}).`
       );
     }
 
-    return db;
+    const hasSessionUrl =
+      Boolean(props[SESSION_URL_PROP]) && props[SESSION_URL_PROP].type === "url";
+
+    return { db, hasSessionUrl };
   } catch (err) {
     if (err.code === "object_not_found" || err.status === 404) {
       console.error(
@@ -141,6 +134,36 @@ async function ensureDbAccess() {
       );
     }
     throw err;
+  }
+}
+
+/** Post-column-delete status: count tagged rows (sample title only with --verbose). */
+async function statusAfterSessionUrlRemoved() {
+  const pages = await traverseRows({
+    databaseId: DATABASE_ID,
+    filter: {
+      property: TAGS_PROP,
+      multi_select: { contains: DONE_TAG },
+    },
+    rowWork: null,
+    limit: Infinity,
+  });
+
+  log(`mode=${mode} session_url=removed skip-done=${pages.length}`);
+
+  if (VERBOSE && pages.length > 0) {
+    const sample = pages[0];
+    verbose(`sample_title=${titleOf(sample)}`);
+    verbose(`sample_id=${sample.id}`);
+    verbose(`sample_url=${urlOf(sample, URL_PROP)}`);
+  }
+
+  if (APPLY || DELETE_PROPERTY) {
+    console.error("session_url property already removed; nothing to apply/delete");
+    process.exit(1);
+  }
+  if (VERIFY) {
+    log(pages.length > 0 ? "VERIFY OK (tagged rows present)" : "VERIFY: no tagged rows");
   }
 }
 
@@ -215,7 +238,12 @@ async function deleteSessionUrlProperty() {
 }
 
 async function main() {
-  await ensureDbAccess();
+  const { hasSessionUrl } = await ensureDbAccess();
+
+  if (!hasSessionUrl) {
+    await statusAfterSessionUrlRemoved();
+    return;
+  }
 
   const pages = await traverseRows({
     databaseId: DATABASE_ID,
@@ -244,7 +272,7 @@ async function main() {
       verbose(`    session_url=${r.sessionUrl}`);
     }
   } else if (counts.conflict > 0) {
-    log(`conflict_titles_hidden (pass --verbose)`);
+    log(`conflict_count=${counts.conflict} (pass --verbose for details)`);
   }
 
   const reportPath = await writeReport(counts, mode);
