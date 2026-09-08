@@ -91,9 +91,27 @@ written there; output includes activity names with `[activity: activity_name]` p
 `.findings-state/lock`; remove it only after confirming no migration is running.
 Do not run from multiple worktrees/devices concurrently.
 
-Hosting is deferred. Before scheduling on ephemeral runners, provide durable private
-journal storage and single-run concurrency; do not simply schedule this script as-is.
+Local runs retain the journal. Hosted runs intentionally do not persist it, so
+a move followed by a failed Activity update requires manual repair.
 A live run moved one finding and verified its destination and Activity relation.
 
 A complete successful apply, including zero findings, updates `findings_synced_at`.
 Dry-run, verification and failures do not update it. The Date property must exist.
+
+## Hosting: GitHub Actions
+
+`.github/workflows/findings-sync.yml` runs hourly at minute 17 (UTC), plus manual
+**Run workflow**. Standard runners are free for this public repository. GitHub
+may delay schedules and disables public-repository schedules after 60 days without
+repository activity; re-enable the workflow in Actions if that happens.
+
+Required repository Actions secrets: `NOTION_API_KEY`,
+`ACTIVITIES_DATA_SOURCE_ID`, `CONTENT_DATA_SOURCE_ID`. No IDs or tokens are in the
+workflow. Runs have read-only repository permissions, a 15-minute timeout and a
+shared concurrency group. No PR/push trigger receives Notion credentials.
+
+Hosted logs contain aggregate counts only, not activity names or finding content.
+No journal artifacts/caches are uploaded. As explicitly chosen, there is no durable
+hosted recovery journal: inspect content-db and repair Activity manually if a run
+fails after a move. Do not overlap a local apply with a hosted run. The first
+hosted run verifies new moves; historical local journal entries are not imported.

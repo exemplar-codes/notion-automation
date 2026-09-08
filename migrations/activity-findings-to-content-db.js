@@ -148,7 +148,9 @@ async function main() {
       try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); }
       await fs.rename(`${file}.tmp`, file);
     };
-    const counts = await migrate({ request, state, save, mode });
+    const counts = await migrate({ request, state, save, mode,
+      log: process.env.GITHUB_ACTIONS === 'true' ? () => {} : console.log,
+    });
     console.log(JSON.stringify({ mode, ...counts }));
     if (mode === 'verify' && counts.pending) process.exitCode = 1;
   } finally {
@@ -158,6 +160,6 @@ async function main() {
 }
 module.exports = { migrate, pageId };
 if (require.main === module) main().catch(error => {
-  console.error(`Migration failed (${error.code || error.status || error.message}); journal retained. Check permissions, schema, assignments and lock before retrying.`);
+  console.error(`Migration failed (${error.code || error.status || (process.env.GITHUB_ACTIONS === 'true' ? 'validation' : error.message)}). On hosted runs, an interrupted move may require manual Activity repair; local journal retained.`);
   process.exitCode = 1;
 });

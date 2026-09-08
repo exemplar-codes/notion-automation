@@ -1,0 +1,35 @@
+name: Findings sync
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: findings-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install locked dependencies
+        run: |
+          npm install --global pnpm@11.1.0
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Offline checks
+        run: |
+          node --test health.test.js
+          node migrations/activity-findings-to-content-db.test.js
+      - name: Sync findings
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          ACTIVITIES_DATA_SOURCE_ID: ${{ secrets.ACTIVITIES_DATA_SOURCE_ID }}
+          CONTENT_DATA_SOURCE_ID: ${{ secrets.CONTENT_DATA_SOURCE_ID }}
+        run: node migrations/activity-findings-to-content-db.js --apply
