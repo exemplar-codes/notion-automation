@@ -4,9 +4,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node --env-file=.env .",
-    "migrate:session-url": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js",
-    "migrate:session-url:apply": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js --apply",
-    "migrate:session-url:verify": "node --env-file=.env migrations/2026-08-13-content-db-session-url-to-url.js --verify"
+    "migrate:session-url": "node --env-file=.env migrations/content-db-session-url-to-url.js",
+    "migrate:session-url:apply": "node --env-file=.env migrations/content-db-session-url-to-url.js --apply",
+    "migrate:session-url:verify": "node --env-file=.env migrations/content-db-session-url-to-url.js --verify",
+    "health": "node health.js"
   },
   "keywords": [],
   "author": "",

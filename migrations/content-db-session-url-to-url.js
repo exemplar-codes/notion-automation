@@ -8,10 +8,10 @@
  * Conflicts (both set and differ): skip — do not overwrite, do not tag.
  *
  * Usage:
- *   node migrations/2026-08-13-content-db-session-url-to-url.js
- *   node migrations/2026-08-13-content-db-session-url-to-url.js --apply
- *   node migrations/2026-08-13-content-db-session-url-to-url.js --verify
- *   node migrations/2026-08-13-content-db-session-url-to-url.js --delete-property
+ *   node migrations/content-db-session-url-to-url.js
+ *   node migrations/content-db-session-url-to-url.js --apply
+ *   node migrations/content-db-session-url-to-url.js --verify
+ *   node migrations/content-db-session-url-to-url.js --delete-property
  *   … add --verbose for per-row titles / conflict URLs / report path
  */
 
@@ -21,7 +21,7 @@ const { notion } = require("../setup.js");
 const { traverseRows, sleep, parseLimit } = require("../lib.js");
 
 const DATABASE_ID =
-  process.env.DATABASE_ID || "046335fc-56fe-4f8a-afd8-12bf4bc18205";
+  process.env.CONTENT_DATABASE_ID || process.env.DATABASE_ID;
 const SESSION_URL_PROP = "session_url";
 const URL_PROP = "URL";
 const TAGS_PROP = "Tags";
@@ -238,6 +238,7 @@ async function deleteSessionUrlProperty() {
 }
 
 async function main() {
+  if (!DATABASE_ID) throw new Error("CONTENT_DATABASE_ID (or legacy DATABASE_ID) is required");
   const { hasSessionUrl } = await ensureDbAccess();
 
   if (!hasSessionUrl) {
