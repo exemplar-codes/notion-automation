@@ -84,7 +84,6 @@ async function migrate({ request, state, save, env = process.env, log = console.
         log(`[activity: ${names.get(activity)}] Skipped: content page is trashed`);
         continue;
       }
-      if (normalize(parent.parent?.page_id) !== activity) throw new Error('Content page is not a child of its activity');
       let found = 0;
       for (const block of await list(`blocks/${source}/children`)) {
         if (block.type !== 'child_page' || block.archived || block.in_trash) continue;

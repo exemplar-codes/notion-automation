@@ -57,9 +57,11 @@ function fixture() {
       if (target !== 'child') assert.equal(t.calls.filter(c => c.method === 'patch' || c.route.startsWith('blocks/')).length, 0);
     }
   }
-  const mismatch = fixture();
-  await migrate({ ...mismatch, request: (...args) => args[0] === `pages/${source}` ? { parent: { page_id: other } } : mismatch.request(...args) });
-  assert.ok(mismatch.logs.some(line => line.includes('Failed: Content page is not a child')));
+  for (const parent of [{ page_id: other }, { block_id: other }]) {
+    const relocated = fixture();
+    const result = await migrate({ ...relocated, request: (...args) => args[0] === `pages/${source}` ? { parent } : relocated.request(...args) });
+    assert.equal(result.completed, 1, 'findings_url works regardless of the content page parent');
+  }
   const continuation = fixture();
   const nextActivity = 'd'.repeat(32), nextSource = '2'.repeat(32);
   continuation.fail(true);

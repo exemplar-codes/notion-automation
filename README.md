@@ -77,8 +77,8 @@ node migrations/activity-findings-to-content-db.test.js    # offline checks
 
 Uses the existing SDK's `request()` with API version `2026-03-11`; older migrations
 are unchanged. Grant the integration access to activities-db, its content pages,
-and content-db. The migration validates the `Activity` relation target and requires
-each content page to be a direct child of its activity. It refuses ambiguous
+and content-db. The migration validates the `Activity` relation target and uses `findings_url` as
+the source of truth, regardless of where the content page is located. It refuses ambiguous
 assignments, archived candidates, or pages moved elsewhere. All activities and their direct findings are processed without a limit.
 `RATE_LIMITING_INTERVAL` defaults to 350 ms and cannot be lower; 429s are retried.
 
