@@ -11,12 +11,14 @@ source ~/.zshrc && source ~/.env
 [ -f .env ] || cp .env.example .env
 ```
 
-Keep your Notion API token in the global environment (usually `~/.env`). The
-accepted names, in priority order, are `NOTION_API_TOKEN`, `NOTION_TOKEN`, and
-`NOTION_API_KEY`. Use the API integration token, not `NOTION_MCP_KEY`. Avoid
-setting multiple token aliases: a higher-priority placeholder can mask a valid key.
-The project `.env` is gitignored and supplies values missing from the exported
-environment; exported values take precedence. Do not commit or print credentials.
+Read only `NOTION_API_KEY` from the global environment (`~/.env`). Do not copy
+the token into the project `.env`, print it, or commit it. Do not use
+`NOTION_MCP_KEY` or another token alias for setup.
+
+All database/data-source IDs and migration settings belong in the gitignored
+project `.env`; do not reuse them from global environment variables. The runtime
+honors exported variables first, so unset globally exported project-specific
+variables if they would shadow the project `.env`.
 
 Fill the project `.env` with the IDs for your workspace:
 
@@ -38,15 +40,15 @@ that the separate API integration can access it.
 ### Instructions for coding agents setting up this repository
 
 1. Read this README and `.env.example`. Preserve any existing project `.env`.
-2. Source `~/.zshrc` and `~/.env` to reuse available global credentials and IDs.
-   Check variable presence without printing secret values. Do not ask the user
-   to paste a token if the correct API token is already available globally.
+2. Read only `NOTION_API_KEY` from the global environment. Check its presence
+   without printing the value. Do not ask the user to paste it if already available.
+   Do not take database IDs, settings, or other credential aliases from global envs.
 3. For missing IDs, use Notion MCP to find `activities-db` and `content-db`, then
    fetch their database/data-source metadata. Resolve each database container ID
-   and its data-source ID separately. Reuse verified global IDs when available;
-   never invent IDs or hardcode workspace IDs in migration source files.
+   and its data-source ID separately. Preserve existing project IDs; resolve missing
+   ones through MCP. Never invent IDs or hardcode them in migration source files.
 4. Write the resolved IDs and migration settings into the gitignored project
-   `.env`. Keep credentials in the global environment when already configured.
+   `.env`. Keep only `NOTION_API_KEY` in the global environment.
    Additional content pages come from activity properties `findings_url` and
    `findings_url_all` (legacy alias `finding_urls_all`), not code constants.
 5. Run `npm run health` to verify read access using the API integration. If an ID,
