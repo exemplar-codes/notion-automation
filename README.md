@@ -42,15 +42,15 @@ This does not prove write permissions or page-move support.
 Run `npm run help` for setup and usage examples, or `npm run migrations -- ls`
 to list available migration names (excluding tests). Neither command needs credentials or calls Notion.
 
-From a shell that has sourced `~/.zshrc` (so `NOTION_API_TOKEN` is set), or with a local `.env`:
+Use the shared migration entry point. It loads the optional project `.env`, checks
+credentials and required IDs, then runs the named migration. Exported environment
+variables take precedence. Migration-specific behavior stays in individual files.
 
 ```sh
-node --env-file=.env migrations/<file>.js            # dry-run (quiet summary)
-node --env-file=.env migrations/<file>.js --apply
-node --env-file=.env migrations/<file>.js --verify
-node --env-file=.env migrations/<file>.js --apply --verbose   # per-row titles
-# or, if token is already exported:
-node migrations/<file>.js
+npm run migrate -- <name>            # dry-run
+npm run migrate -- <name> --apply
+npm run migrate -- <name> --verify
+npm run migrations -- ls
 ```
 
 Env knobs (see `.env.example`): `DATABASE_ID`, `RATE_LIMITING_INTERVAL`, `ROW_LIMIT`.
@@ -71,9 +71,9 @@ pages are not separately migrated; no filtered views or columns are created.
 
 ```sh
 # After sourcing ~/.zshrc and ~/.env (or supplying a local .env):
-node migrations/activity-findings-to-content-db.js          # read-only preview
-node migrations/activity-findings-to-content-db.js --apply
-node migrations/activity-findings-to-content-db.js --verify
+npm run migrate -- activity-findings-to-content-db          # read-only preview
+npm run migrate -- activity-findings-to-content-db --apply
+npm run migrate -- activity-findings-to-content-db --verify
 node migrations/activity-findings-to-content-db.test.js    # offline checks
 ```
 

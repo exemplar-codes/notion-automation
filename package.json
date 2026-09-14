@@ -4,12 +4,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node --env-file=.env .",
-    "migrate:content": "node migrations/content-db-session-url-to-url.js",
-    "migrate:content:apply": "node migrations/content-db-session-url-to-url.js --apply",
-    "migrate:content:verify": "node migrations/content-db-session-url-to-url.js --verify",
     "health": "node health.js",
     "help": "node migrations.js help",
-    "migrations": "node migrations.js"
+    "migrations": "node migrations.js",
+    "migrate": "node migrations.js run"
   },
   "keywords": [],
   "author": "",
