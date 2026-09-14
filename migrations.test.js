@@ -18,10 +18,10 @@ for (const args of [['run', '../setup'], ['run'], ['run', 'activity-findings-to-
   assert.equal(result.process.exitCode, 1);
   assert.equal(result.dispatched, undefined);
 }
-const result = run(['run', 'activity-findings-to-content-db', '--apply'], {
+const result = run(['run', 'activity-findings-to-content-db', '--verbose'], {
   NOTION_API_KEY: 'test', ACTIVITIES_DATA_SOURCE_ID: 'a'.repeat(32), CONTENT_DATA_SOURCE_ID: 'b'.repeat(32),
 });
 assert.ok(result.dispatched[1][0].endsWith('/migrations/activity-findings-to-content-db.js'));
-assert.equal(result.dispatched[1][1], '--apply');
+assert.equal(result.dispatched[1][1], '--verbose');
 assert.equal(result.process.exitCode, 7);
 console.log('Migration runner checks passed (name, env, arguments, exit status)');

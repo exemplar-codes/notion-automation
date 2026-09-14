@@ -1,5 +1,5 @@
 /** Move direct child pages from activities.findings_url into content-db.
- * Dry-run by default. --apply moves; --verify checks the saved journal and inboxes.
+ * Runs immediately; journal entries recover interrupted moves.
  * Keep .findings-state/ between runs: it records intent BEFORE each move.
  */
 const fs = require('node:fs/promises');
@@ -13,7 +13,7 @@ function pageId(value) {
   if (!id) throw new Error('Invalid findings_url page ID');
   return normalize(id);
 }
-async function migrate({ request, state, save, mode = 'dry-run', env = process.env, log = console.log, onError = (prefix, error) => log(`${prefix} Failed: ${error.message}`) }) {
+async function migrate({ request, state, save, env = process.env, log = console.log, onError = (prefix, error) => log(`${prefix} Failed: ${error.message}`) }) {
   const ACTIVITIES = env.ACTIVITIES_DATA_SOURCE_ID;
   const CONTENT = env.CONTENT_DATA_SOURCE_ID;
   for (const [name, id] of Object.entries({ ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT })) {
@@ -95,9 +95,9 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         jobs.set(id, job);
       }
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
-      log(`${prefix} Processing (${mode}): ${jobs.size} findings, concurrency ${concurrency}`);
+      log(`${prefix} Processing: ${jobs.size} findings, concurrency ${concurrency}`);
       let handled = 0, skippedFindings = 0;
-      const progress = () => log(`${prefix} Progress (${mode}): ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
+      const progress = () => log(`${prefix} Progress: ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
       progress();
       const migratePage = async (id, job) => {
         // Fresh findings were just listed under the source; only recovery needs a pre-read.
@@ -114,18 +114,13 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         const related = prop?.relation || [];
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
         if (inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
-          if (mode === 'apply') await forget(id);
+          await forget(id);
           counts.verified++;
           handled++;
           progress();
           return;
         }
         counts.pending++;
-        if (mode !== 'apply') {
-          handled++;
-          progress();
-          return;
-        }
         state[id] = job;
         journalQueue = journalQueue.then(() => save(state));
         await journalQueue; // Serialize durable intent before each move.
@@ -159,11 +154,10 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
       const pending = counts.pending - before.pending;
       const completed = counts.completed - before.completed;
       const verified = counts.verified - before.verified;
-      if (mode === 'apply' && pending === completed) {
+      if (pending === completed) {
         await request(`pages/${activity}`, 'patch', { properties: { findings_synced_at: { date: { start: new Date().toISOString() } } } });
       }
-      const result = mode === 'dry-run' ? `Preview: would move ${pending}` : mode === 'apply' ? `Done: moved ${completed}` : `Checked: ${pending} pending`;
-      log(`${prefix} ${result}, already migrated ${verified}`);
+      log(`${prefix} Done: moved ${completed}, already migrated ${verified}`);
     } catch (error) {
       onError(prefix, error);
     }
@@ -171,8 +165,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
   return counts;
 }
 async function main() {
-  const args = process.argv.slice(2);
-  if (args.some(a => !['--apply', '--verify'].includes(a)) || args.length > 1) throw new Error('Use --apply OR --verify, or no arguments for dry-run');
+  if (process.argv.length > 2) throw new Error('This migration takes no flags; run it by name to execute');
   require('dotenv').config({ quiet: true });
   const token = process.env.NOTION_API_TOKEN || process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
   if (!token) throw new Error('Missing Notion API token: $NOTION_API_KEY');
@@ -194,7 +187,6 @@ async function main() {
       }
     }
   };
-  const mode = args.includes('--apply') ? 'apply' : args.includes('--verify') ? 'verify' : 'dry-run';
   const directory = path.join(__dirname, '..', '.findings-state');
   const file = path.join(directory, 'journal.json');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -209,7 +201,7 @@ async function main() {
       try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); }
       await fs.rename(`${file}.tmp`, file);
     };
-    const counts = await migrate({ request, state, save, mode,
+    const counts = await migrate({ request, state, save,
       log: console.log,
       onError: (prefix, error) => {
         console.error(process.env.GITHUB_ACTIONS === 'true'
@@ -218,8 +210,7 @@ async function main() {
         process.exitCode = 1;
       },
     });
-    console.log(JSON.stringify({ mode, ...counts }));
-    if (mode === 'verify' && counts.pending) process.exitCode = 1;
+    console.log(JSON.stringify(counts));
   } finally {
     await lock.close();
     await fs.unlink(path.join(directory, 'lock'));

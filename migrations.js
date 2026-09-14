@@ -11,6 +11,7 @@ if (command === 'run') {
   try {
     const [name, ...args] = extra;
     if (!names.includes(name)) throw new Error('Choose a migration name from npm run migrations -- ls');
+    if (args.some(arg => ['--apply', '--verify', '--dry-run'].includes(arg))) throw new Error('Mode flags were removed; run the migration by name to execute directly');
     require('dotenv').config({ path: path.join(__dirname, '.env'), quiet: true });
     if (!(process.env.NOTION_API_TOKEN || process.env.NOTION_TOKEN || process.env.NOTION_API_KEY)) throw new Error('Missing Notion API token; set NOTION_API_KEY');
     const required = name === 'activity-findings-to-content-db'
@@ -45,13 +46,11 @@ Discover:
   npm run health                        Read-only connection check
 
 Run any migration (replace <name> with a name from the list):
-  npm run migrate -- <name>              Dry-run: preview without writes
-  npm run migrate -- <name> --apply      Apply changes to Notion
-  npm run migrate -- <name> --verify     Verify migration results
+  npm run migrate -- <name>              Execute changes in Notion
 
 Findings example:
-  npm run migrate -- activity-findings-to-content-db --apply
-  FINDINGS_CONCURRENCY=5 npm run migrate -- activity-findings-to-content-db --apply
+  npm run migrate -- activity-findings-to-content-db
+  FINDINGS_CONCURRENCY=5 npm run migrate -- activity-findings-to-content-db
 
 Findings requires ACTIVITIES_DATA_SOURCE_ID and CONTENT_DATA_SOURCE_ID.
 Session URL migration uses CONTENT_DATABASE_ID (or legacy DATABASE_ID).

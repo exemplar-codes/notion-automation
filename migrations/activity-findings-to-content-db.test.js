@@ -52,7 +52,7 @@ function fixture() {
         if (args[0] === `pages/${target === 'source' ? source : child}` && target !== 'activity') result[flag] = true;
         return result;
       };
-      assert.deepEqual(await migrate({ ...t, request, mode: 'apply' }), { pending: 0, completed: 0, verified: 0 });
+      assert.deepEqual(await migrate({ ...t, request }), { pending: 0, completed: 0, verified: 0 });
       assert.equal(t.calls.filter(c => c.route.endsWith('/move') || (c.method === 'patch' && c.route !== `pages/${activity}`)).length, 0);
       if (target !== 'child') assert.equal(t.calls.filter(c => c.method === 'patch' || c.route.startsWith('blocks/')).length, 0);
     }
@@ -75,7 +75,7 @@ function fixture() {
     return result;
   };
   // The first activity must attempt its move before the next activity is scanned.
-  await migrate({ ...continuation, request: continuationRequest, mode: 'apply' });
+  await migrate({ ...continuation, request: continuationRequest });
   assert.ok(continuation.calls.some(c => c.route === `pages/${nextActivity}` && c.method === 'patch'));
   assert.ok(!continuation.calls.some(c => c.route === `pages/${activity}` && c.method === 'patch'));
   for (const limit of [1, 3, 5]) {
@@ -111,7 +111,7 @@ function fixture() {
       saved = JSON.parse(JSON.stringify(value));
       saving = false;
     };
-    const result = await migrate({ ...t, request, save, mode: 'apply', env: { ...env, FINDINGS_CONCURRENCY: String(limit) } });
+    const result = await migrate({ ...t, request, save, env: { ...env, FINDINGS_CONCURRENCY: String(limit) } });
     assert.equal(result.completed, ids.length);
     assert.equal(peak, limit, 'requests overlap up to configured concurrency');
     assert.equal(Object.keys(saved).length, 0);
@@ -119,7 +119,7 @@ function fixture() {
   }
   await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
   const fresh = fixture();
-  await migrate({ ...fresh, mode: 'apply' });
+  await migrate({ ...fresh });
   assert.deepEqual(fresh.calls.filter(c => c.route === `pages/${child}` || c.route === `pages/${child}/move`).map(c => [c.route, c.method]), [
     [`pages/${child}/move`, 'post'],
     [`pages/${child}`, 'get'],
@@ -129,40 +129,33 @@ function fixture() {
   const f = fixture();
   await assert.rejects(migrate({ ...f, env: {} }), /ACTIVITIES_DATA_SOURCE_ID/);
   assert.equal(f.calls.length, 0);
-  assert.equal((await migrate(f)).pending, 1);
-  assert.ok(f.logs.includes('[activity: Startup] Found 1 finding pages'));
-  assert.ok(f.logs.includes('[activity: Startup] Preview: would move 1, already migrated 0'));
-  assert.equal(f.calls.filter(c => c.method === 'patch' || c.route.endsWith('/move')).length, 0);
-  assert.equal(f.calls.filter(c => c.query?.start_cursor === 'children-2').length, 1);
-  assert.deepEqual(f.state, {});
-  assert.equal(f.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 0);
   f.fail(true);
-  await migrate({ ...f, mode: 'apply' });
+  await migrate({ ...f });
   assert.deepEqual(f.state[child], { source, activity });
   assert.equal(f.logs.at(-1), '[activity: Startup] Failed: simulated update failure');
   f.fail(false);
-  assert.equal((await migrate({ ...f, mode: 'apply' })).completed, 1);
+  assert.equal((await migrate({ ...f })).completed, 1);
   assert.equal(f.calls.filter(c => c.route.endsWith('/move')).length, 1, 'retry must not move twice');
-  assert.equal((await migrate({ ...f, mode: 'verify' })).pending, 0);
+  assert.equal((await migrate({ ...f })).pending, 0);
   assert.deepEqual(f.state, {});
   const readsBefore = f.calls.filter(c => c.route === `pages/${child}`).length;
-  assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 0);
+  assert.equal((await migrate({ ...f })).verified, 0);
   assert.equal(f.calls.filter(c => c.route === `pages/${child}`).length, readsBefore, 'completed pages are not revisited');
   // Older journals are pruned after verifying an already completed entry.
   f.state[child] = { source, activity };
-  assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 1);
+  assert.equal((await migrate({ ...f })).verified, 1);
   assert.deepEqual(f.state, {});
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
   assert.ok(f.logs.includes('[activity: Startup] Done: moved 0, already migrated 1'));
-  assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
-  assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] Progress: 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] Progress: 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
   const hosted = fixture();
   await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
   assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
   assert.ok(hosted.logs.every(line => !line.includes('Startup')));
   f.state[child] = { source, activity };
   f.conflict();
-  await migrate({ ...f, mode: 'apply' });
+  await migrate({ ...f });
   assert.ok(f.logs.at(-1).includes('conflicting Activity'));
-  console.log('findings migration checks passed (pagination, dry-run, recovery, idempotency, conflicts)');
+  console.log('findings migration checks passed (pagination, recovery, idempotency, conflicts)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

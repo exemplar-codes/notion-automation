@@ -32,4 +32,4 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           ACTIVITIES_DATA_SOURCE_ID: ${{ secrets.ACTIVITIES_DATA_SOURCE_ID }}
           CONTENT_DATA_SOURCE_ID: ${{ secrets.CONTENT_DATA_SOURCE_ID }}
-        run: node migrations/activity-findings-to-content-db.js --apply
+        run: npm run migrate -- activity-findings-to-content-db

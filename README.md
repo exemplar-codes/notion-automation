@@ -35,9 +35,11 @@ This does not prove write permissions or page-move support.
 | `lib.js` | Shared helpers (`traverseRows`, rate limit) |
 | `index.js` | Scratch / ad-hoc experiments |
 | `migrations/` | **History of custom migration scripts** — one file per job; keep them |
-| `reports/` | Local dry-run/apply JSON outputs — **aggregates only** (counts/mode); no row titles/URLs/ids. Still gitignored by default |
+| `reports/` | Local execution JSON outputs — **aggregates only** (counts/mode); no row titles/URLs/ids. Still gitignored by default |
 
 ## Run a migration
+
+Migrations execute immediately: `npm run migrate -- <name>`. There are no dry-run, apply, or verify modes.
 
 Run `npm run help` for setup and usage examples, or `npm run migrations -- ls`
 to list available migration names (excluding tests). Neither command needs credentials or calls Notion.
@@ -47,9 +49,7 @@ credentials and required IDs, then runs the named migration. Exported environmen
 variables take precedence. Migration-specific behavior stays in individual files.
 
 ```sh
-npm run migrate -- <name>            # dry-run
-npm run migrate -- <name> --apply
-npm run migrate -- <name> --verify
+npm run migrate -- <name>
 npm run migrations -- ls
 ```
 
@@ -71,9 +71,7 @@ pages are not separately migrated; no filtered views or columns are created.
 
 ```sh
 # After sourcing ~/.zshrc and ~/.env (or supplying a local .env):
-npm run migrate -- activity-findings-to-content-db          # read-only preview
-npm run migrate -- activity-findings-to-content-db --apply
-npm run migrate -- activity-findings-to-content-db --verify
+npm run migrate -- activity-findings-to-content-db
 node migrations/activity-findings-to-content-db.test.js    # offline checks
 ```
 
@@ -87,7 +85,6 @@ assignments, archived candidates, or pages moved elsewhere. All activities and t
 **Recovery:** `.findings-state/journal.json` records page IDs and their activity
 before moving. It is private, gitignored state, separate from aggregate reports.
 Retain it between runs: if relation assignment fails after moving, rerunning repairs
-that same page. Entries are deleted after successful verification; the journal contains only unfinished work. Old completed entries are verified and removed on the next apply run. `--verify` checks remaining recovery entries and inboxes.
 A lost journal loses that recovery mapping. No credentials or page content are
 written there; output includes activity names with `[activity: activity_name]` prefixes, findings counts
 (including zero), processing mode and completion/failure status, plus aggregate counts. A crash may leave
@@ -99,7 +96,7 @@ a move followed by a failed Activity update requires manual repair.
 A live run moved one finding and verified its destination and Activity relation.
 
 A complete successful apply, including zero findings, updates `findings_synced_at`.
-Dry-run, verification and failures do not update it. The Date property must exist.
+Failures do not update it. The Date property must exist.
 
 ## Hosting: GitHub Actions
 
