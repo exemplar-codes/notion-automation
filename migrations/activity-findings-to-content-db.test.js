@@ -118,6 +118,14 @@ function fixture() {
     assert.ok(t.logs.some(line => line.includes('7/7 handled, 0 left')));
   }
   await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
+  const fresh = fixture();
+  await migrate({ ...fresh, mode: 'apply' });
+  assert.deepEqual(fresh.calls.filter(c => c.route === `pages/${child}` || c.route === `pages/${child}/move`).map(c => [c.route, c.method]), [
+    [`pages/${child}/move`, 'post'],
+    [`pages/${child}`, 'get'],
+    [`pages/${child}`, 'patch'],
+    [`pages/${child}`, 'get'],
+  ], 'fresh finding moves directly without a pre-read or search');
   const f = fixture();
   await assert.rejects(migrate({ ...f, env: {} }), /ACTIVITIES_DATA_SOURCE_ID/);
   assert.equal(f.calls.length, 0);

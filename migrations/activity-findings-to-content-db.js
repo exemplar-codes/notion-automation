@@ -91,7 +91,8 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
       const progress = () => log(`${prefix} Progress (${mode}): ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
       progress();
       const migratePage = async (id, job) => {
-        let page = await request(`pages/${id}`);
+        // Fresh findings were just listed under the source; only recovery needs a pre-read.
+        let page = state[id] ? await request(`pages/${id}`) : { parent: { page_id: job.source } };
         if (page.archived || page.in_trash) {
           skippedFindings++;
           handled++;
