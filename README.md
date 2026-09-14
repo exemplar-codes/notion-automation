@@ -5,13 +5,56 @@ Manual Notion automations and one-off migrations.
 ## Setup
 
 ```sh
-pnpm i
-# Auth / common env vars are usually already in the shell (~/.zshrc → ~/.env).
-# Optional local overrides:
-cp .env.example .env   # set NOTION_API_TOKEN if not sourced from the shell
+pnpm install --frozen-lockfile
+source ~/.zshrc && source ~/.env
+# Create project configuration only if it does not already exist:
+[ -f .env ] || cp .env.example .env
 ```
 
-Share the target database with your Notion integration before running anything.
+Keep your Notion API token in the global environment (usually `~/.env`). The
+accepted names, in priority order, are `NOTION_API_TOKEN`, `NOTION_TOKEN`, and
+`NOTION_API_KEY`. Use the API integration token, not `NOTION_MCP_KEY`. Avoid
+setting multiple token aliases: a higher-priority placeholder can mask a valid key.
+The project `.env` is gitignored and supplies values missing from the exported
+environment; exported values take precedence. Do not commit or print credentials.
+
+Fill the project `.env` with the IDs for your workspace:
+
+```dotenv
+ACTIVITIES_DATABASE_ID=<activities-db database ID>
+CONTENT_DATABASE_ID=<content-db database ID>
+ACTIVITIES_DATA_SOURCE_ID=<activities-db data source ID>
+CONTENT_DATA_SOURCE_ID=<content-db data source ID>
+RATE_LIMITING_INTERVAL=350
+FINDINGS_CONCURRENCY=5
+```
+
+Database IDs are used by the health check and session-URL migration. Data-source
+IDs are used by the findings migration; these are different IDs and must not be
+substituted for one another. Share both databases and source content pages with
+the API integration. Being able to see a page through MCP does not establish
+that the separate API integration can access it.
+
+### Instructions for coding agents setting up this repository
+
+1. Read this README and `.env.example`. Preserve any existing project `.env`.
+2. Source `~/.zshrc` and `~/.env` to reuse available global credentials and IDs.
+   Check variable presence without printing secret values. Do not ask the user
+   to paste a token if the correct API token is already available globally.
+3. For missing IDs, use Notion MCP to find `activities-db` and `content-db`, then
+   fetch their database/data-source metadata. Resolve each database container ID
+   and its data-source ID separately. Reuse verified global IDs when available;
+   never invent IDs or hardcode workspace IDs in migration source files.
+4. Write the resolved IDs and migration settings into the gitignored project
+   `.env`. Keep credentials in the global environment when already configured.
+   Additional content pages come from activity properties `findings_url` and
+   `findings_url_all` (legacy alias `finding_urls_all`), not code constants.
+5. Run `npm run health` to verify read access using the API integration. If an ID,
+   credential, or permission is still missing after discovery, report exactly
+   what is missing. Do not run a migration merely to test setup: migrations write
+   immediately and should run only when requested.
+
+Use `npm run help` for commands and `npm run migrations -- ls` for migration names.
 
 ## Read-only health check
 
