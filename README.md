@@ -39,6 +39,9 @@ This does not prove write permissions or page-move support.
 
 ## Run a migration
 
+Run `npm run help` for setup and usage examples, or `npm run migrations -- ls`
+to list available migration names (excluding tests). Neither command needs credentials or calls Notion.
+
 From a shell that has sourced `~/.zshrc` (so `NOTION_API_TOKEN` is set), or with a local `.env`:
 
 ```sh

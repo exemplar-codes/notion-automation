@@ -7,7 +7,9 @@
     "migrate:session-url": "node --env-file=.env migrations/content-db-session-url-to-url.js",
     "migrate:session-url:apply": "node --env-file=.env migrations/content-db-session-url-to-url.js --apply",
     "migrate:session-url:verify": "node --env-file=.env migrations/content-db-session-url-to-url.js --verify",
-    "health": "node health.js"
+    "health": "node health.js",
+    "help": "node migrations.js help",
+    "migrations": "node migrations.js"
   },
   "keywords": [],
   "author": "",
