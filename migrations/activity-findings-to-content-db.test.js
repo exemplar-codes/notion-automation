@@ -40,6 +40,41 @@ function fixture() {
   assert.equal(pageId(`https://app.notion.com/p/Startup-content-${source}?source=copy_link`), source);
   assert.throws(() => pageId(`https://evil.example/${source}`));
   assert.throws(() => pageId('https://app.notion.com/no-id'));
+  for (const flag of ['archived', 'in_trash']) {
+    for (const target of ['activity', 'source', 'child']) {
+      const t = fixture();
+      t.state[child] = { source, activity };
+      const request = async (...args) => {
+        const result = await t.request(...args);
+        if (target === 'activity' && args[0].endsWith('/query')) {
+          result.results.forEach(row => { row[flag] = true; });
+        }
+        if (args[0] === `pages/${target === 'source' ? source : child}` && target !== 'activity') result[flag] = true;
+        return result;
+      };
+      assert.deepEqual(await migrate({ ...t, request, mode: 'apply' }), { pending: 0, completed: 0, verified: 0 });
+      assert.equal(t.calls.filter(c => c.route.endsWith('/move') || (c.method === 'patch' && c.route !== `pages/${activity}`)).length, 0);
+      if (target !== 'child') assert.equal(t.calls.filter(c => c.method === 'patch' || c.route.startsWith('blocks/')).length, 0);
+    }
+  }
+  const mismatch = fixture();
+  await migrate({ ...mismatch, request: (...args) => args[0] === `pages/${source}` ? { parent: { page_id: other } } : mismatch.request(...args) });
+  assert.ok(mismatch.logs.some(line => line.includes('Failed: Content page is not a child')));
+  const continuation = fixture();
+  const nextActivity = 'd'.repeat(32), nextSource = '2'.repeat(32);
+  continuation.fail(true);
+  const continuationRequest = async (...args) => {
+    if (args[0] === `pages/${nextSource}`) return { parent: { page_id: nextActivity } };
+    if (args[0] === `blocks/${nextSource}/children`) return { results: [], has_more: false };
+    if (args[0] === `pages/${nextActivity}`) { continuation.calls.push({ route: args[0], method: args[1] }); return {}; }
+    const result = await continuation.request(...args);
+    if (args[0].endsWith('/query') && !args[2].start_cursor) result.results.push({ id: nextActivity, properties: { findings_url: { url: `https://notion.so/${nextSource}` } } });
+    return result;
+  };
+  // Put the second activity after Startup in the deterministic order.
+  await migrate({ ...continuation, request: continuationRequest, mode: 'apply' });
+  assert.ok(continuation.calls.some(c => c.route === `pages/${nextActivity}` && c.method === 'patch'));
+  assert.ok(!continuation.calls.some(c => c.route === `pages/${activity}` && c.method === 'patch'));
   const f = fixture();
   await assert.rejects(migrate({ ...f, env: {} }), /ACTIVITIES_DATA_SOURCE_ID/);
   assert.equal(f.calls.length, 0);
@@ -51,9 +86,9 @@ function fixture() {
   assert.deepEqual(f.state, {});
   assert.equal(f.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 0);
   f.fail(true);
-  await assert.rejects(migrate({ ...f, mode: 'apply' }), /simulated/);
+  await migrate({ ...f, mode: 'apply' });
   assert.deepEqual(f.state[child], { source, activity });
-  assert.equal(f.logs.at(-1), '[activity: Startup] Failed');
+  assert.equal(f.logs.at(-1), '[activity: Startup] Failed: simulated update failure');
   f.fail(false);
   assert.equal((await migrate({ ...f, mode: 'apply' })).completed, 1);
   assert.equal(f.calls.filter(c => c.route.endsWith('/move')).length, 1, 'retry must not move twice');
@@ -62,6 +97,7 @@ function fixture() {
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
   assert.ok(f.logs.includes('[activity: Startup] Done: completed 0, remaining 0, verified 1'));
   f.conflict();
-  await assert.rejects(migrate({ ...f, mode: 'apply' }), /conflicting Activity/);
+  await migrate({ ...f, mode: 'apply' });
+  assert.ok(f.logs.at(-1).includes('conflicting Activity'));
   console.log('findings migration checks passed (pagination, dry-run, recovery, idempotency, conflicts)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -13,7 +13,7 @@ function pageId(value) {
   if (!id) throw new Error('Invalid findings_url page ID');
   return normalize(id);
 }
-async function migrate({ request, state, save, mode = 'dry-run', env = process.env, log = console.log }) {
+async function migrate({ request, state, save, mode = 'dry-run', env = process.env, log = console.log, onError = (prefix, error) => log(`${prefix} Failed: ${error.message}`) }) {
   const ACTIVITIES = env.ACTIVITIES_DATA_SOURCE_ID;
   const CONTENT = env.CONTENT_DATA_SOURCE_ID;
   for (const [name, id] of Object.entries({ ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT })) {
@@ -43,7 +43,12 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
   activities.sort((a, b) => normalize(a.id).localeCompare(normalize(b.id)));
   const sources = new Map();
   const names = new Map();
+  const skipped = new Set();
   for (const activity of activities) {
+    if (activity.archived || activity.in_trash) {
+      skipped.add(normalize(activity.id));
+      continue;
+    }
     const source = pageId(activity.properties.findings_url.url);
     if (sources.has(source)) throw new Error('Multiple activities share a findings_url');
     sources.set(source, normalize(activity.id));
@@ -54,23 +59,35 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
   const jobs = new Map(Object.entries(state));
   for (const [source, activity] of sources) {
     log(`[activity: ${names.get(activity)}] Starting scan`);
-    const parent = await request(`pages/${source}`);
-    if (parent.archived || parent.in_trash || normalize(parent.parent?.page_id) !== activity) throw new Error('Content page is not a live child of its activity');
-    let found = 0;
-    for (const block of await list(`blocks/${source}/children`)) {
-      if (block.type !== 'child_page' || block.archived || block.in_trash) continue;
-      found++;
-      const id = normalize(block.id);
-      const job = { source, activity };
-      if (jobs.has(id) && (jobs.get(id).source !== source || jobs.get(id).activity !== activity)) throw new Error('Conflicting page assignment');
-      jobs.set(id, job);
+    try {
+      const parent = await request(`pages/${source}`);
+      if (parent.archived || parent.in_trash) {
+        skipped.add(activity);
+        log(`[activity: ${names.get(activity)}] Skipped: content page is trashed`);
+        continue;
+      }
+      if (normalize(parent.parent?.page_id) !== activity) throw new Error('Content page is not a child of its activity');
+      let found = 0;
+      for (const block of await list(`blocks/${source}/children`)) {
+        if (block.type !== 'child_page' || block.archived || block.in_trash) continue;
+        found++;
+        const id = normalize(block.id);
+        const job = { source, activity };
+        if (jobs.has(id) && (jobs.get(id).source !== source || jobs.get(id).activity !== activity)) throw new Error('Conflicting page assignment');
+        jobs.set(id, job);
+      }
+      log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
+    } catch (error) {
+      skipped.add(activity);
+      onError(`[activity: ${names.get(activity)}]`, error);
     }
-    log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
   }
   for (const [id, job] of jobs) {
+    if (skipped.has(job.activity)) continue;
     if (!/^[a-f0-9]{32}$/.test(id) || sources.get(job.source) !== job.activity) throw new Error('Journal does not match current activities');
   }
   for (const activity of sources.values()) {
+    if (skipped.has(activity)) continue;
     const prefix = `[activity: ${names.get(activity)}]`;
     const before = { ...counts };
     log(`${prefix} Processing (${mode})`);
@@ -78,7 +95,10 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
       for (const [id, job] of jobs) {
         if (job.activity !== activity) continue;
         let page = await request(`pages/${id}`);
-        if (page.archived || page.in_trash) throw new Error('Candidate is archived');
+        if (page.archived || page.in_trash) {
+          log(`${prefix} Skipped: finding is trashed`);
+          continue;
+        }
         const inTarget = normalize(page.parent?.data_source_id) === normalize(CONTENT);
         if (!inTarget && normalize(page.parent?.page_id) !== job.source) throw new Error('Candidate was moved elsewhere');
         const prop = page.properties?.Activity;
@@ -113,8 +133,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
       const result = mode === 'dry-run' ? `would move ${pending}` : mode === 'apply' ? `completed ${completed}, remaining ${pending - completed}` : `pending ${pending}`;
       log(`${prefix} Done: ${result}, verified ${verified}`);
     } catch (error) {
-      log(`${prefix} Failed`);
-      throw error;
+      onError(prefix, error);
     }
   }
   return counts;
@@ -157,6 +176,12 @@ async function main() {
     };
     const counts = await migrate({ request, state, save, mode,
       log: process.env.GITHUB_ACTIONS === 'true' ? () => {} : console.log,
+      onError: (prefix, error) => {
+        console.error(process.env.GITHUB_ACTIONS === 'true'
+          ? `Activity failed (${error.code || error.status || 'validation'}); continuing with next activity`
+          : `${prefix} Failed: ${error.message}; continuing with next activity`);
+        process.exitCode = 1;
+      },
     });
     console.log(JSON.stringify({ mode, ...counts }));
     if (mode === 'verify' && counts.pending) process.exitCode = 1;

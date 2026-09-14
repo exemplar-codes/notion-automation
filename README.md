@@ -60,7 +60,7 @@ are no workspace ID defaults. The older session-url migration uses
 `CONTENT_DATABASE_ID`, with `DATABASE_ID` retained as a legacy fallback.
 
 `migrations/activity-findings-to-content-db.js` uses each activity's
-`findings_url` to move its direct child pages into content-db and set `Activity`.
+`findings_url` to move its direct child pages into content-db and set `Activity`, adding `migration` to `Tags` while preserving existing tags.
 All activities with a URL are included, irrespective of their Active checkbox.
 The original page ID, body and nested content stay with the moved page. It leaves
 its old parent's child-page list. Links to pages, inline databases and nested
