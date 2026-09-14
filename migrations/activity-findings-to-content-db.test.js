@@ -131,7 +131,7 @@ function fixture() {
   assert.equal(f.calls.length, 0);
   assert.equal((await migrate(f)).pending, 1);
   assert.ok(f.logs.includes('[activity: Startup] Found 1 finding pages'));
-  assert.ok(f.logs.includes('[activity: Startup] Done: would move 1, verified 0'));
+  assert.ok(f.logs.includes('[activity: Startup] Preview: would move 1, already migrated 0'));
   assert.equal(f.calls.filter(c => c.method === 'patch' || c.route.endsWith('/move')).length, 0);
   assert.equal(f.calls.filter(c => c.query?.start_cursor === 'children-2').length, 1);
   assert.deepEqual(f.state, {});
@@ -146,7 +146,7 @@ function fixture() {
   assert.equal((await migrate({ ...f, mode: 'verify' })).pending, 0);
   assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 1);
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
-  assert.ok(f.logs.includes('[activity: Startup] Done: completed 0, remaining 0, verified 1'));
+  assert.ok(f.logs.includes('[activity: Startup] Done: moved 0, already migrated 1'));
   assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
   assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
   const hosted = fixture();

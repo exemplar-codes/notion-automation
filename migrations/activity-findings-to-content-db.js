@@ -151,8 +151,8 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
       if (mode === 'apply' && pending === completed) {
         await request(`pages/${activity}`, 'patch', { properties: { findings_synced_at: { date: { start: new Date().toISOString() } } } });
       }
-      const result = mode === 'dry-run' ? `would move ${pending}` : mode === 'apply' ? `completed ${completed}, remaining ${pending - completed}` : `pending ${pending}`;
-      log(`${prefix} Done: ${result}, verified ${verified}`);
+      const result = mode === 'dry-run' ? `Preview: would move ${pending}` : mode === 'apply' ? `Done: moved ${completed}` : `Checked: ${pending} pending`;
+      log(`${prefix} ${result}, already migrated ${verified}`);
     } catch (error) {
       onError(prefix, error);
     }
