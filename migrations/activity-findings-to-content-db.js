@@ -53,7 +53,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
     if (sources.has(source)) throw new Error('Multiple activities share a findings_url');
     sources.set(source, normalize(activity.id));
     const title = activity.properties.Name?.title || [];
-    names.set(normalize(activity.id), title.map(t => t.plain_text || t.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)');
+    names.set(normalize(activity.id), env.GITHUB_ACTIONS === 'true' ? `#${names.size + 1}` : title.map(t => t.plain_text || t.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)');
   }
   for (const [id, job] of Object.entries(state)) {
     if (skipped.has(job.activity)) continue;
@@ -83,11 +83,16 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         jobs.set(id, job);
       }
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
-      log(`${prefix} Processing (${mode})`);
+      log(`${prefix} Processing (${mode}): ${jobs.size} findings`);
+      let handled = 0, skippedFindings = 0;
+      const progress = () => log(`${prefix} Progress (${mode}): ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
+      progress();
       for (const [id, job] of jobs) {
         let page = await request(`pages/${id}`);
         if (page.archived || page.in_trash) {
-          log(`${prefix} Skipped: finding is trashed`);
+          skippedFindings++;
+          handled++;
+          progress();
           continue;
         }
         const inTarget = normalize(page.parent?.data_source_id) === normalize(CONTENT);
@@ -97,10 +102,16 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
         if (inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
           counts.verified++;
+          handled++;
+          progress();
           continue;
         }
         counts.pending++;
-        if (mode !== 'apply') continue;
+        if (mode !== 'apply') {
+          handled++;
+          progress();
+          continue;
+        }
         state[id] = job;
         await save(state); // Durable intent also covers an ambiguous move response.
         if (!inTarget) await request(`pages/${id}/move`, 'post', { parent: { type: 'data_source_id', data_source_id: CONTENT } });
@@ -114,6 +125,8 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         page = await request(`pages/${id}`);
         if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity || !page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) throw new Error('Post-write verification failed');
         counts.completed++;
+        handled++;
+        progress();
       }
       const pending = counts.pending - before.pending;
       const completed = counts.completed - before.completed;
@@ -166,7 +179,7 @@ async function main() {
       await fs.rename(`${file}.tmp`, file);
     };
     const counts = await migrate({ request, state, save, mode,
-      log: process.env.GITHUB_ACTIONS === 'true' ? () => {} : console.log,
+      log: console.log,
       onError: (prefix, error) => {
         console.error(process.env.GITHUB_ACTIONS === 'true'
           ? `Activity failed (${error.code || error.status || 'validation'}); continuing with next activity`

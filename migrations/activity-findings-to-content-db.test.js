@@ -99,6 +99,12 @@ function fixture() {
   assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 1);
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
   assert.ok(f.logs.includes('[activity: Startup] Done: completed 0, remaining 0, verified 1'));
+  assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
+  const hosted = fixture();
+  await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
+  assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
+  assert.ok(hosted.logs.every(line => !line.includes('Startup')));
   f.conflict();
   await migrate({ ...f, mode: 'apply' });
   assert.ok(f.logs.at(-1).includes('conflicting Activity'));
