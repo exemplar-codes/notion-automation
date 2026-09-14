@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { migrate, pageId } = require('./activity-findings-to-content-db');
+const { migrate, pageId, extraSources } = require('./activity-findings-to-content-db');
 const ACTIVITIES = 'e'.repeat(32), CONTENT = 'f'.repeat(32);
 const env = { ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT };
 const activity = 'a'.repeat(32), source = 'b'.repeat(32), child = 'c'.repeat(32), other = 'd'.repeat(32);
@@ -120,6 +120,35 @@ function fixture() {
     assert.ok(t.logs.some(line => line.includes('7/7 handled, 0 left')));
   }
   await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
+  assert.deepEqual([...extraSources({ rich_text: [
+    { plain_text: `Notes https://notion.so/${source}, https://example.com/${other} https://notion.so.evil.com/${other} https://notion.so/no-page` },
+    { plain_text: 'Food', text: { link: { url: `https://food.notion.site/${other}` } } },
+    { plain_text: `https://app.notion.com/p/${source}` },
+  ] })], [source, other]);
+  for (const onlyExtra of [false, true]) {
+    const t = fixture();
+    let extraScanned = false;
+    const request = async (...args) => {
+      if (args[0] === `pages/${other}`) return { parent: { block_id: '1'.repeat(32) } };
+      if (args[0] === `blocks/${other}/children`) {
+        extraScanned = true;
+        return { results: [], has_more: false };
+      }
+      if (args[0].endsWith('/move')) assert.ok(extraScanned, 'scan all activity sources before moving');
+      const result = await t.request(...args);
+      if (args[0].endsWith('/query')) {
+        assert.equal(args[2].filter, undefined, 'include activities without the original URL');
+        for (const row of result.results) {
+          if (onlyExtra) row.properties.findings_url.url = null;
+          row.properties.finding_urls_all = { rich_text: [{ plain_text: `Food: https://notion.so/${other} https://notion.so/${source} https://example.com/ignore` }] };
+        }
+      }
+      return result;
+    };
+    assert.equal((await migrate({ ...t, request })).completed, 1);
+    assert.equal(t.calls.filter(c => c.route === `pages/${source}`).length, 1, 'deduplicate source URLs');
+    assert.equal(t.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 1);
+  }
   const fresh = fixture();
   await migrate({ ...fresh });
   assert.deepEqual(fresh.calls.filter(c => c.route === `pages/${child}` || c.route === `pages/${child}/move`).map(c => [c.route, c.method]), [

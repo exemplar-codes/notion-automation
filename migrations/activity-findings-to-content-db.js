@@ -8,10 +8,20 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const normalize = value => value?.replace(/-/g, '').toLowerCase();
 function pageId(value) {
   const url = new URL(value);
-  if (url.protocol !== 'https:' || !['app.notion.com', 'www.notion.so', 'notion.so'].includes(url.hostname)) throw new Error('Invalid findings_url host');
+  if (url.protocol !== 'https:' || !(['app.notion.com', 'www.notion.so', 'notion.so', 'notion.site'].includes(url.hostname) || url.hostname.endsWith('.notion.site'))) throw new Error('Invalid findings_url host');
   const id = url.pathname.match(/([a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/?$/i)?.[1];
   if (!id) throw new Error('Invalid findings_url page ID');
   return normalize(id);
+}
+function extraSources(property) {
+  const rich = property?.rich_text || [];
+  const text = [property?.url || '', rich.map(part => part.plain_text ?? part.text?.content ?? '').join(''),
+    ...rich.map(part => part.href || part.text?.link?.url || '')].join(' ');
+  const ids = new Set();
+  for (const match of text.matchAll(/https:\/\/[^\s<>"'\[\]()]+/g)) {
+    try { ids.add(pageId(match[0].replace(/[.,;!?]+$/, ''))); } catch { /* Ignore prose, non-Notion links and invalid page URLs. */ }
+  }
+  return ids;
 }
 async function migrate({ request, state, save, env = process.env, log = console.log, onError = (prefix, error) => log(`${prefix} Failed: ${error.message}`) }) {
   const ACTIVITIES = env.ACTIVITIES_DATA_SOURCE_ID;
@@ -51,19 +61,26 @@ async function migrate({ request, state, save, env = process.env, log = console.
   const activitiesSchema = await request(`data_sources/${ACTIVITIES}`);
   if (activitiesSchema.properties?.findings_url?.type !== 'url') throw new Error('findings_url must be a URL property');
   if (activitiesSchema.properties?.findings_synced_at?.type !== 'date') throw new Error('findings_synced_at must be a Date property');
-  const activities = await list(`data_sources/${ACTIVITIES}/query`, 'post', { filter: { property: 'findings_url', url: { is_not_empty: true } } });
+  const activities = await list(`data_sources/${ACTIVITIES}/query`, 'post');
   activities.sort((a, b) => normalize(a.id).localeCompare(normalize(b.id)));
   const sources = new Map();
   const names = new Map();
+  const activitySources = new Map();
   const skipped = new Set();
   for (const activity of activities) {
     if (activity.archived || activity.in_trash) {
       skipped.add(normalize(activity.id));
       continue;
     }
-    const source = pageId(activity.properties.findings_url.url);
-    if (sources.has(source)) throw new Error('Multiple activities share a findings_url');
-    sources.set(source, normalize(activity.id));
+    const ids = extraSources(activity.properties.finding_urls_all);
+    if (activity.properties.findings_url?.url) ids.add(pageId(activity.properties.findings_url.url));
+    if (!ids.size) continue;
+    const activityId = normalize(activity.id);
+    for (const source of ids) {
+      if (sources.has(source) && sources.get(source) !== activityId) throw new Error('Multiple activities share a findings URL');
+      sources.set(source, activityId);
+    }
+    activitySources.set(activityId, ids);
     const title = activity.properties.Name?.title || [];
     names.set(normalize(activity.id), env.GITHUB_ACTIONS === 'true' ? `#${names.size + 1}` : title.map(t => t.plain_text || t.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)');
   }
@@ -71,28 +88,33 @@ async function migrate({ request, state, save, env = process.env, log = console.
     if (skipped.has(job.activity)) continue;
     if (!/^[a-f0-9]{32}$/.test(id) || sources.get(job.source) !== job.activity) throw new Error('Journal does not match current activities');
   }
-  for (const [source, activity] of sources) {
+  for (const [activity, contentSources] of activitySources) {
     const prefix = `[activity: ${names.get(activity)}]`;
     const before = { ...counts };
     // Finish this activity's pagination before moving its pages.
     const jobs = new Map(Object.entries(state).filter(([, job]) => job.activity === activity));
     log(`${prefix} Starting scan`);
     try {
-      const parent = await request(`pages/${source}`);
-      if (parent.archived || parent.in_trash) {
-        skipped.add(activity);
-        log(`[activity: ${names.get(activity)}] Skipped: content page is trashed`);
-        continue;
+      let found = 0, liveSources = 0, scanned = 0;
+      for (const source of contentSources) {
+        log(`${prefix} Scanning content page ${++scanned}/${contentSources.size}`);
+        const parent = await request(`pages/${source}`);
+        if (parent.archived || parent.in_trash) {
+          log(`${prefix} Skipped: content page is trashed`);
+          for (const [id, job] of jobs) if (job.source === source) jobs.delete(id);
+          continue;
+        }
+        liveSources++;
+        for (const block of await list(`blocks/${source}/children`)) {
+          if (block.type !== 'child_page' || block.archived || block.in_trash) continue;
+          found++;
+          const id = normalize(block.id);
+          const job = { source, activity };
+          if (jobs.has(id) && (jobs.get(id).source !== source || jobs.get(id).activity !== activity)) throw new Error('Conflicting page assignment');
+          jobs.set(id, job);
+        }
       }
-      let found = 0;
-      for (const block of await list(`blocks/${source}/children`)) {
-        if (block.type !== 'child_page' || block.archived || block.in_trash) continue;
-        found++;
-        const id = normalize(block.id);
-        const job = { source, activity };
-        if (jobs.has(id) && (jobs.get(id).source !== source || jobs.get(id).activity !== activity)) throw new Error('Conflicting page assignment');
-        jobs.set(id, job);
-      }
+      if (!liveSources) continue;
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
       log(`${prefix} Processing: ${jobs.size} findings, concurrency ${concurrency}`);
       let handled = 0, skippedFindings = 0;
@@ -208,7 +230,7 @@ async function main() {
   });
   console.log(JSON.stringify(counts));
 }
-module.exports = { migrate, pageId };
+module.exports = { migrate, pageId, extraSources };
 if (require.main === module) main().catch(error => {
   console.error(`Migration failed (${error.code || error.status || (process.env.GITHUB_ACTIONS === 'true' ? 'validation' : error.message)}). On hosted runs, an interrupted move may require manual Activity repair; local journal retained.`);
   process.exitCode = 1;

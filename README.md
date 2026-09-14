@@ -64,7 +64,7 @@ are no workspace ID defaults. The older session-url migration uses
 
 `migrations/activity-findings-to-content-db.js` uses each activity's
 `findings_url` to move its direct child pages into content-db and set `Activity`, adding `migration` to `Tags` while preserving existing tags.
-All activities with a URL are included, irrespective of their Active checkbox.
+Optional `finding_urls_all` text can contain additional Notion page URLs (plain text or hyperlinks). These are combined with `findings_url` and deduplicated per activity; other links and text are ignored. Activities with only additional URLs are included too. All sources for an activity are scanned before its findings are moved. The Active checkbox does not filter activities.
 The original page ID, body and nested content stay with the moved page. It leaves
 its old parent's child-page list. Links to pages, inline databases and nested
 pages are not separately migrated; no filtered views or columns are created.
