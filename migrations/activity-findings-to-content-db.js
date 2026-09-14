@@ -93,14 +93,23 @@ async function migrate({ request, state, save, env = process.env, log = console.
     const before = { ...counts };
     // Finish this activity's pagination before moving its pages.
     const jobs = new Map(Object.entries(state).filter(([, job]) => job.activity === activity));
+    const contentPrefixes = new Map();
+    let errorPrefix = prefix;
     log(`${prefix} Starting scan`);
     try {
       let found = 0, liveSources = 0, scanned = 0;
       for (const source of contentSources) {
         log(`${prefix} Scanning content page ${++scanned}/${contentSources.size}`);
         const parent = await request(`pages/${source}`);
+        const title = Object.values(parent.properties || {}).find(property => Array.isArray(property.title))?.title || [];
+        const name = env.GITHUB_ACTIONS === 'true' ? `#${scanned}` : title.map(part => part.plain_text || part.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)';
+        const contentPrefix = `${prefix} [content: ${name}]`;
+        contentPrefixes.set(source, contentPrefix);
+        errorPrefix = contentPrefix;
+        log(`${contentPrefix} Scanning findings`);
+        const foundBefore = found;
         if (parent.archived || parent.in_trash) {
-          log(`${prefix} Skipped: content page is trashed`);
+          log(`${contentPrefix} Skipped: content page is trashed`);
           for (const [id, job] of jobs) if (job.source === source) jobs.delete(id);
           continue;
         }
@@ -113,12 +122,14 @@ async function migrate({ request, state, save, env = process.env, log = console.
           if (jobs.has(id) && (jobs.get(id).source !== source || jobs.get(id).activity !== activity)) throw new Error('Conflicting page assignment');
           jobs.set(id, job);
         }
+        log(`${contentPrefix} Found ${found - foundBefore} finding pages`);
       }
+      errorPrefix = prefix;
       if (!liveSources) continue;
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
       log(`${prefix} Processing: ${jobs.size} findings, concurrency ${concurrency}`);
       let handled = 0, skippedFindings = 0;
-      const progress = () => log(`${prefix} Progress: ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
+      const progress = source => log(`${contentPrefixes.get(source) || prefix} Progress: ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
       progress();
       const migratePage = async (id, job) => {
         // Fresh findings were just listed under the source; only recovery needs a pre-read.
@@ -126,7 +137,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
         if (page.archived || page.in_trash) {
           skippedFindings++;
           handled++;
-          progress();
+          progress(job.source);
           return;
         }
         const inTarget = normalize(page.parent?.data_source_id) === normalize(CONTENT);
@@ -138,7 +149,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
           await forget(id);
           counts.verified++;
           handled++;
-          progress();
+          progress(job.source);
           return;
         }
         counts.pending++;
@@ -158,7 +169,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
         await forget(id);
         counts.completed++;
         handled++;
-        progress();
+        progress(job.source);
       };
       const remaining = jobs.entries();
       let failure;
@@ -167,7 +178,10 @@ async function migrate({ request, state, save, env = process.env, log = console.
           const next = remaining.next();
           if (next.done) return;
           try { await migratePage(...next.value); }
-          catch (error) { failure ||= error; }
+          catch (error) {
+            if (!failure) errorPrefix = contentPrefixes.get(next.value[1].source) || prefix;
+            failure ||= error;
+          }
         }
       }));
       // Let in-flight pages finish before reporting failure or starting another activity.
@@ -180,7 +194,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
       }
       log(`${prefix} Done: moved ${completed}, already migrated ${verified}`);
     } catch (error) {
-      onError(prefix, error);
+      onError(errorPrefix, error);
     }
   }
   return counts;

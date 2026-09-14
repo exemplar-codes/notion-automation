@@ -12,7 +12,7 @@ function fixture() {
     if (route === `data_sources/${CONTENT}`) return { properties: { Tags: { type: 'multi_select' }, Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
     if (route === `data_sources/${ACTIVITIES}`) return { properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { type: 'url' }, findings_synced_at: { type: 'date' } } };
     if (route.endsWith('/query')) return body.start_cursor ? { results: [], has_more: false } : { results: [{ id: activity, properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { url: `https://app.notion.com/p/${source}` } } }], has_more: true, next_cursor: 'activities-2' };
-    if (route === `pages/${source}`) return { parent: { page_id: activity } };
+    if (route === `pages/${source}`) return { parent: { page_id: activity }, properties: { title: { title: [{ plain_text: 'Startup content' }] } } };
     if (route === `blocks/${source}/children`) return query.start_cursor ? { results: parent.page_id ? [{ id: child, type: 'child_page' }] : [], has_more: false } : { results: [{ id: other, type: 'link_to_page' }], has_more: true, next_cursor: 'children-2' };
     if (route.endsWith('/move')) {
       assert.deepEqual(state[child], { source, activity }, 'intent saved before move');
@@ -129,7 +129,7 @@ function fixture() {
     const t = fixture();
     let extraScanned = false;
     const request = async (...args) => {
-      if (args[0] === `pages/${other}`) return { parent: { block_id: '1'.repeat(32) } };
+      if (args[0] === `pages/${other}`) return { parent: { block_id: '1'.repeat(32) }, properties: { title: { title: [{ plain_text: 'Food content' }] } } };
       if (args[0] === `blocks/${other}/children`) {
         extraScanned = true;
         return { results: [], has_more: false };
@@ -146,6 +146,8 @@ function fixture() {
       return result;
     };
     assert.equal((await migrate({ ...t, request })).completed, 1);
+    assert.ok(t.logs.includes('[activity: Startup] [content: Food content] Found 0 finding pages'));
+    assert.ok(t.logs.some(line => line.startsWith('[activity: Startup] [content: Startup content] Progress:')));
     assert.equal(t.calls.filter(c => c.route === `pages/${source}`).length, 1, 'deduplicate source URLs');
     assert.equal(t.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 1);
   }
@@ -163,7 +165,7 @@ function fixture() {
   f.fail(true);
   await migrate({ ...f });
   assert.deepEqual(f.state[child], { source, activity });
-  assert.equal(f.logs.at(-1), '[activity: Startup] Failed: simulated update failure');
+  assert.equal(f.logs.at(-1), '[activity: Startup] [content: Startup content] Failed: simulated update failure');
   f.fail(false);
   assert.equal((await migrate({ ...f })).completed, 1);
   assert.equal(f.calls.filter(c => c.route.endsWith('/move')).length, 1, 'retry must not move twice');
@@ -178,8 +180,8 @@ function fixture() {
   assert.deepEqual(f.state, {});
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
   assert.ok(f.logs.includes('[activity: Startup] Done: moved 0, already migrated 1'));
-  assert.ok(f.logs.includes('[activity: Startup] Progress: 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
-  assert.ok(f.logs.includes('[activity: Startup] Progress: 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] [content: Startup content] Progress: 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] [content: Startup content] Progress: 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
   const hosted = fixture();
   await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
   assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
