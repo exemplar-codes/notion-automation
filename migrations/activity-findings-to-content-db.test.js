@@ -1,17 +1,18 @@
 const assert = require('node:assert/strict');
-const { migrate, pageId } = require('./activity-findings-to-content-db');
+const { migrate, pageId, extraSources } = require('./activity-findings-to-content-db');
 const ACTIVITIES = 'e'.repeat(32), CONTENT = 'f'.repeat(32);
 const env = { ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT };
 const activity = 'a'.repeat(32), source = 'b'.repeat(32), child = 'c'.repeat(32), other = 'd'.repeat(32);
 function fixture() {
   const state = {}, calls = [], logs = [];
+  let tags = [{ name: 'existing' }];
   let parent = { page_id: source }, related = [], failUpdate = false, conflict = false;
   const request = async (route, method = 'get', body, query) => {
     calls.push({ route, method, body, query });
-    if (route === `data_sources/${CONTENT}`) return { properties: { Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
+    if (route === `data_sources/${CONTENT}`) return { properties: { Tags: { type: 'multi_select' }, Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
     if (route === `data_sources/${ACTIVITIES}`) return { properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { type: 'url' }, findings_synced_at: { type: 'date' } } };
     if (route.endsWith('/query')) return body.start_cursor ? { results: [], has_more: false } : { results: [{ id: activity, properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { url: `https://app.notion.com/p/${source}` } } }], has_more: true, next_cursor: 'activities-2' };
-    if (route === `pages/${source}`) return { parent: { page_id: activity } };
+    if (route === `pages/${source}`) return { parent: { page_id: activity }, properties: { title: { title: [{ plain_text: 'Startup content' }] } } };
     if (route === `blocks/${source}/children`) return query.start_cursor ? { results: parent.page_id ? [{ id: child, type: 'child_page' }] : [], has_more: false } : { results: [{ id: other, type: 'link_to_page' }], has_more: true, next_cursor: 'children-2' };
     if (route.endsWith('/move')) {
       assert.deepEqual(state[child], { source, activity }, 'intent saved before move');
@@ -26,9 +27,11 @@ function fixture() {
     if (route === `pages/${child}` && method === 'patch') {
       if (failUpdate) throw new Error('simulated update failure');
       related = body.properties.Activity.relation;
+      tags = body.properties.Tags.multi_select;
+      assert.deepEqual(tags, [{ name: 'existing' }, { name: 'migration' }]);
       return {};
     }
-    if (route === `pages/${child}`) return { parent, properties: { Activity: { relation: conflict ? [{ id: other }] : related } } };
+    if (route === `pages/${child}`) return { parent, properties: { Tags: { multi_select: tags }, Activity: { relation: conflict ? [{ id: other }] : related } } };
     throw new Error(`Unexpected call: ${route}`);
   };
   return { env, state, calls, logs, log: line => logs.push(line), request, save: async value => assert.equal(value, state), fail: value => { failUpdate = value; }, conflict: () => { conflict = true; } };
@@ -37,28 +40,159 @@ function fixture() {
   assert.equal(pageId(`https://app.notion.com/p/Startup-content-${source}?source=copy_link`), source);
   assert.throws(() => pageId(`https://evil.example/${source}`));
   assert.throws(() => pageId('https://app.notion.com/no-id'));
+  for (const flag of ['archived', 'in_trash']) {
+    for (const target of ['activity', 'source', 'child']) {
+      const t = fixture();
+      t.state[child] = { source, activity };
+      const request = async (...args) => {
+        const result = await t.request(...args);
+        if (target === 'activity' && args[0].endsWith('/query')) {
+          result.results.forEach(row => { row[flag] = true; });
+        }
+        if (args[0] === `pages/${target === 'source' ? source : child}` && target !== 'activity') result[flag] = true;
+        return result;
+      };
+      assert.deepEqual(await migrate({ ...t, request }), { pending: 0, completed: 0, verified: 0 });
+      assert.equal(t.calls.filter(c => c.route.endsWith('/move') || (c.method === 'patch' && c.route !== `pages/${activity}`)).length, 0);
+      if (target !== 'child') assert.equal(t.calls.filter(c => c.method === 'patch' || c.route.startsWith('blocks/')).length, 0);
+    }
+  }
+  for (const parent of [{ page_id: other }, { block_id: other }]) {
+    const relocated = fixture();
+    const result = await migrate({ ...relocated, request: (...args) => args[0] === `pages/${source}` ? { parent } : relocated.request(...args) });
+    assert.equal(result.completed, 1, 'findings_url works regardless of the content page parent');
+  }
+  const continuation = fixture();
+  const nextActivity = 'd'.repeat(32), nextSource = '2'.repeat(32);
+  continuation.fail(true);
+  const continuationRequest = async (...args) => {
+    if (args[0] === `pages/${nextSource}`) {
+      assert.ok(continuation.calls.some(c => c.route.endsWith('/move')), 'move before scanning next activity');
+      return { parent: { page_id: nextActivity } };
+    }
+    if (args[0] === `blocks/${nextSource}/children`) return { results: [], has_more: false };
+    if (args[0] === `pages/${nextActivity}`) { continuation.calls.push({ route: args[0], method: args[1] }); return {}; }
+    const result = await continuation.request(...args);
+    if (args[0].endsWith('/query') && !args[2].start_cursor) result.results.push({ id: nextActivity, properties: { findings_url: { url: `https://notion.so/${nextSource}` } } });
+    return result;
+  };
+  // The first activity must attempt its move before the next activity is scanned.
+  await migrate({ ...continuation, request: continuationRequest });
+  assert.ok(continuation.calls.some(c => c.route === `pages/${nextActivity}` && c.method === 'patch'));
+  assert.ok(!continuation.calls.some(c => c.route === `pages/${activity}` && c.method === 'patch'));
+  for (const limit of [1, 3, 5]) {
+    const t = fixture();
+    const ids = Array.from({ length: 7 }, (_, i) => (i + 1).toString(16).repeat(32));
+    const pages = new Map(ids.map(id => [id, { parent: { page_id: source }, properties: {} }]));
+    let active = 0, peak = 0, saving = false, saved = {};
+    const request = async (route, method = 'get', body, query) => {
+      if (route === `blocks/${source}/children`) return { results: ids.map(id => ({ id, type: 'child_page' })), has_more: false };
+      const id = route.split('/')[1];
+      if (!pages.has(id)) {
+        if (route === `pages/${activity}` && method === 'patch') assert.equal(active, 0);
+        return t.request(route, method, body, query);
+      }
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 2));
+        if (route.endsWith('/move')) {
+          assert.deepEqual(saved[id], { source, activity });
+          pages.get(id).parent = { data_source_id: CONTENT };
+        } else if (method === 'patch') {
+          assert.equal(pages.get(id).parent.data_source_id, CONTENT);
+          pages.get(id).properties = body.properties;
+        }
+        return pages.get(id);
+      } finally { active--; }
+    };
+    const save = async value => {
+      assert.equal(saving, false, 'journal writes must not overlap');
+      saving = true;
+      await new Promise(resolve => setTimeout(resolve, 1));
+      saved = JSON.parse(JSON.stringify(value));
+      saving = false;
+    };
+    const result = await migrate({ ...t, request, save, env: { ...env, FINDINGS_CONCURRENCY: String(limit) } });
+    assert.equal(result.completed, ids.length);
+    assert.equal(peak, limit, 'requests overlap up to configured concurrency');
+    assert.equal(Object.keys(saved).length, 0);
+    assert.ok(t.logs.some(line => line.includes('7/7 handled, 0 left')));
+  }
+  await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
+  assert.deepEqual([...extraSources({ rich_text: [
+    { plain_text: `Notes https://notion.so/${source}, https://example.com/${other} https://notion.so.evil.com/${other} https://notion.so/no-page` },
+    { plain_text: 'Food', text: { link: { url: `https://food.notion.site/${other}` } } },
+    { plain_text: `https://app.notion.com/p/${source}` },
+  ] })], [source, other]);
+  assert.deepEqual([...extraSources({ rich_text: [{ type: 'mention', plain_text: 'Reading content', mention: { type: 'page', page: { id: source } } }] })], [source]);
+  for (const onlyExtra of [false, true]) {
+    const t = fixture();
+    let extraScanned = false;
+    const request = async (...args) => {
+      if (args[0] === `pages/${other}`) return { parent: { block_id: '1'.repeat(32) }, properties: { title: { title: [{ plain_text: 'Food content' }] } } };
+      if (args[0] === `blocks/${other}/children`) {
+        extraScanned = true;
+        return { results: [], has_more: false };
+      }
+      if (args[0].endsWith('/move')) assert.ok(extraScanned, 'scan all activity sources before moving');
+      const result = await t.request(...args);
+      if (args[0].endsWith('/query')) {
+        assert.equal(args[2].filter, undefined, 'include activities without the original URL');
+        for (const row of result.results) {
+          if (onlyExtra) row.properties.findings_url.url = null;
+          row.properties[onlyExtra ? 'findings_url_all' : 'finding_urls_all'] = { rich_text: [
+            { type: 'mention', plain_text: 'Food content', mention: { type: 'page', page: { id: other } } },
+            { plain_text: ` https://notion.so/${source} https://example.com/ignore` },
+          ] };
+        }
+      }
+      return result;
+    };
+    assert.equal((await migrate({ ...t, request })).completed, 1);
+    assert.ok(t.logs.includes('[activity: Startup] [content: Food content] Found 0 finding pages'));
+    assert.ok(t.logs.some(line => line.startsWith('[activity: Startup] [content: Startup content] Progress:')));
+    assert.equal(t.calls.filter(c => c.route === `pages/${source}`).length, 1, 'deduplicate source URLs');
+    assert.equal(t.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 1);
+  }
+  const fresh = fixture();
+  await migrate({ ...fresh });
+  assert.deepEqual(fresh.calls.filter(c => c.route === `pages/${child}` || c.route === `pages/${child}/move`).map(c => [c.route, c.method]), [
+    [`pages/${child}/move`, 'post'],
+    [`pages/${child}`, 'get'],
+    [`pages/${child}`, 'patch'],
+    [`pages/${child}`, 'get'],
+  ], 'fresh finding moves directly without a pre-read or search');
   const f = fixture();
   await assert.rejects(migrate({ ...f, env: {} }), /ACTIVITIES_DATA_SOURCE_ID/);
   assert.equal(f.calls.length, 0);
-  assert.equal((await migrate(f)).pending, 1);
-  assert.ok(f.logs.includes('[activity: Startup] Found 1 finding pages'));
-  assert.ok(f.logs.includes('[activity: Startup] Done: would move 1, verified 0'));
-  assert.equal(f.calls.filter(c => c.method === 'patch' || c.route.endsWith('/move')).length, 0);
-  assert.equal(f.calls.filter(c => c.query?.start_cursor === 'children-2').length, 1);
-  assert.deepEqual(f.state, {});
-  assert.equal(f.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 0);
   f.fail(true);
-  await assert.rejects(migrate({ ...f, mode: 'apply' }), /simulated/);
+  await migrate({ ...f });
   assert.deepEqual(f.state[child], { source, activity });
-  assert.equal(f.logs.at(-1), '[activity: Startup] Failed');
+  assert.equal(f.logs.at(-1), '[activity: Startup] [content: Startup content] Failed: simulated update failure');
   f.fail(false);
-  assert.equal((await migrate({ ...f, mode: 'apply' })).completed, 1);
+  assert.equal((await migrate({ ...f })).completed, 1);
   assert.equal(f.calls.filter(c => c.route.endsWith('/move')).length, 1, 'retry must not move twice');
-  assert.equal((await migrate({ ...f, mode: 'verify' })).pending, 0);
-  assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 1);
+  assert.equal((await migrate({ ...f })).pending, 0);
+  assert.deepEqual(f.state, {});
+  const readsBefore = f.calls.filter(c => c.route === `pages/${child}`).length;
+  assert.equal((await migrate({ ...f })).verified, 0);
+  assert.equal(f.calls.filter(c => c.route === `pages/${child}`).length, readsBefore, 'completed pages are not revisited');
+  // Older journals are pruned after verifying an already completed entry.
+  f.state[child] = { source, activity };
+  assert.equal((await migrate({ ...f })).verified, 1);
+  assert.deepEqual(f.state, {});
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
-  assert.ok(f.logs.includes('[activity: Startup] Done: completed 0, remaining 0, verified 1'));
+  assert.ok(f.logs.includes('[activity: Startup] Done: moved 0, already migrated 1'));
+  assert.ok(f.logs.includes('[activity: Startup] [content: Startup content] Progress: 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
+  assert.ok(f.logs.includes('[activity: Startup] [content: Startup content] Progress: 1/1 handled, 0 left; completed 0, verified 1, skipped 0'));
+  const hosted = fixture();
+  await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
+  assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
+  assert.ok(hosted.logs.every(line => !line.includes('Startup')));
+  f.state[child] = { source, activity };
   f.conflict();
-  await assert.rejects(migrate({ ...f, mode: 'apply' }), /conflicting Activity/);
-  console.log('findings migration checks passed (pagination, dry-run, recovery, idempotency, conflicts)');
+  await migrate({ ...f });
+  assert.ok(f.logs.at(-1).includes('conflicting Activity'));
+  console.log('findings migration checks passed (pagination, recovery, idempotency, conflicts)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

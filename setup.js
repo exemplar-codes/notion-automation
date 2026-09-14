@@ -1,4 +1,4 @@
-require("dotenv").config({ override: true, quiet: true });
+require("dotenv").config({ override: false, quiet: true });
 
 const { Client } = require("@notionhq/client");
 const winston = require("winston");

@@ -9,8 +9,6 @@
  *
  * Usage:
  *   node migrations/content-db-session-url-to-url.js
- *   node migrations/content-db-session-url-to-url.js --apply
- *   node migrations/content-db-session-url-to-url.js --verify
  *   node migrations/content-db-session-url-to-url.js --delete-property
  *   … add --verbose for per-row titles / conflict URLs / report path
  */
@@ -29,18 +27,14 @@ const DONE_TAG = "session_url_done";
 const INTERVAL = Number(process.env.RATE_LIMITING_INTERVAL || 350);
 
 const args = new Set(process.argv.slice(2));
-const APPLY = args.has("--apply");
-const VERIFY = args.has("--verify");
 const DELETE_PROPERTY = args.has("--delete-property");
 const VERBOSE = args.has("--verbose") || args.has("-v");
 
-const mode = DELETE_PROPERTY
-  ? "delete-property"
-  : APPLY
-    ? "apply"
-    : VERIFY
-      ? "verify"
-      : "dry-run";
+if ([...args].some(arg => !['--delete-property', '--verbose', '-v'].includes(arg))) {
+  console.error('Run the migration without mode flags; optional --verbose or --delete-property');
+  process.exit(1);
+}
+const mode = DELETE_PROPERTY ? "delete-property" : "apply";
 
 function log(...parts) {
   console.log(...parts);
@@ -158,13 +152,7 @@ async function statusAfterSessionUrlRemoved() {
     verbose(`sample_url=${urlOf(sample, URL_PROP)}`);
   }
 
-  if (APPLY || DELETE_PROPERTY) {
-    console.error("session_url property already removed; nothing to apply/delete");
-    process.exit(1);
-  }
-  if (VERIFY) {
-    log(pages.length > 0 ? "VERIFY OK (tagged rows present)" : "VERIFY: no tagged rows");
-  }
+  log("session_url property already removed; nothing to migrate");
 }
 
 /** Aggregate-only — safe to commit / push (no titles, URLs, or page ids). */
@@ -279,15 +267,6 @@ async function main() {
   const reportPath = await writeReport(counts, mode);
   verbose(`report=${reportPath}`);
 
-  if (VERIFY) {
-    if (counts.copy > 0) {
-      console.error(`VERIFY FAILED: copy=${counts.copy}`);
-      process.exit(1);
-    }
-    log("VERIFY OK");
-    return;
-  }
-
   if (DELETE_PROPERTY) {
     if (counts.copy > 0) {
       console.error(`Refusing --delete-property: copy=${counts.copy}`);
@@ -295,11 +274,6 @@ async function main() {
     }
     await deleteSessionUrlProperty();
     log("deleted session_url property");
-    return;
-  }
-
-  if (!APPLY) {
-    log("dry-run (pass --apply to write)");
     return;
   }
 
