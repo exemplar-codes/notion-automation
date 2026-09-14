@@ -190,31 +190,24 @@ async function main() {
   const directory = path.join(__dirname, '..', '.findings-state');
   const file = path.join(directory, 'journal.json');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  // ponytail: local lock only; hosting must provide a durable journal and single-run concurrency.
-  const lock = await fs.open(path.join(directory, 'lock'), 'wx', 0o600);
-  try {
-    let state = {};
-    try { state = JSON.parse(await fs.readFile(file, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('Invalid journal');
-    const save = async value => {
-      const handle = await fs.open(`${file}.tmp`, 'w', 0o600);
-      try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); }
-      await fs.rename(`${file}.tmp`, file);
-    };
-    const counts = await migrate({ request, state, save,
-      log: console.log,
-      onError: (prefix, error) => {
-        console.error(process.env.GITHUB_ACTIONS === 'true'
-          ? `Activity failed (${error.code || error.status || 'validation'}); continuing with next activity`
-          : `${prefix} Failed: ${error.message}; continuing with next activity`);
-        process.exitCode = 1;
-      },
-    });
-    console.log(JSON.stringify(counts));
-  } finally {
-    await lock.close();
-    await fs.unlink(path.join(directory, 'lock'));
-  }
+  let state = {};
+  try { state = JSON.parse(await fs.readFile(file, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('Invalid journal');
+  const save = async value => {
+    const handle = await fs.open(`${file}.tmp`, 'w', 0o600);
+    try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); } finally { await handle.close(); }
+    await fs.rename(`${file}.tmp`, file);
+  };
+  const counts = await migrate({ request, state, save,
+    log: console.log,
+    onError: (prefix, error) => {
+      console.error(process.env.GITHUB_ACTIONS === 'true'
+        ? `Activity failed (${error.code || error.status || 'validation'}); continuing with next activity`
+        : `${prefix} Failed: ${error.message}; continuing with next activity`);
+      process.exitCode = 1;
+    },
+  });
+  console.log(JSON.stringify(counts));
 }
 module.exports = { migrate, pageId };
 if (require.main === module) main().catch(error => {

@@ -87,8 +87,7 @@ before moving. It is private, gitignored state, separate from aggregate reports.
 Retain it between runs: if relation assignment fails after moving, rerunning repairs
 A lost journal loses that recovery mapping. No credentials or page content are
 written there; output includes activity names with `[activity: activity_name]` prefixes, findings counts
-(including zero), processing mode and completion/failure status, plus aggregate counts. A crash may leave
-`.findings-state/lock`; remove it only after confirming no migration is running.
+(including zero), processing mode and completion/failure status, plus aggregate counts.
 Do not run from multiple worktrees/devices concurrently.
 
 Local runs retain the journal. Hosted runs intentionally do not persist it, so
