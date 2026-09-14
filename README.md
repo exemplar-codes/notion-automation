@@ -115,3 +115,5 @@ No journal artifacts/caches are uploaded. As explicitly chosen, there is no dura
 hosted recovery journal: inspect content-db and repair Activity manually if a run
 fails after a move. Do not overlap a local apply with a hosted run. The first
 hosted run verifies new moves; historical local journal entries are not imported.
+
+Set `FINDINGS_CONCURRENCY` (default `5`) to control parallel findings within each activity. Each page still moves, updates, and verifies in order. API request starts share `RATE_LIMITING_INTERVAL`; journal saves stay serialized. On failure, in-flight pages finish before the next activity starts.

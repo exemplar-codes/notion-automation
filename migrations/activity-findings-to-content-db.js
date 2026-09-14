@@ -19,6 +19,9 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
   for (const [name, id] of Object.entries({ ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT })) {
     if (!/^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(id || '')) throw new Error(`Missing or invalid ${name}`);
   }
+  const concurrency = Number(env.FINDINGS_CONCURRENCY || 5);
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('FINDINGS_CONCURRENCY must be a positive integer');
+  let journalQueue = Promise.resolve();
   const counts = { pending: 0, completed: 0, verified: 0 };
   async function list(route, method = 'get', body = {}) {
     const rows = [];
@@ -83,17 +86,17 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         jobs.set(id, job);
       }
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
-      log(`${prefix} Processing (${mode}): ${jobs.size} findings`);
+      log(`${prefix} Processing (${mode}): ${jobs.size} findings, concurrency ${concurrency}`);
       let handled = 0, skippedFindings = 0;
       const progress = () => log(`${prefix} Progress (${mode}): ${handled}/${jobs.size} handled, ${jobs.size - handled} left; completed ${counts.completed - before.completed}, verified ${counts.verified - before.verified}, skipped ${skippedFindings}`);
       progress();
-      for (const [id, job] of jobs) {
+      const migratePage = async (id, job) => {
         let page = await request(`pages/${id}`);
         if (page.archived || page.in_trash) {
           skippedFindings++;
           handled++;
           progress();
-          continue;
+          return;
         }
         const inTarget = normalize(page.parent?.data_source_id) === normalize(CONTENT);
         if (!inTarget && normalize(page.parent?.page_id) !== job.source) throw new Error('Candidate was moved elsewhere');
@@ -104,16 +107,17 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
           counts.verified++;
           handled++;
           progress();
-          continue;
+          return;
         }
         counts.pending++;
         if (mode !== 'apply') {
           handled++;
           progress();
-          continue;
+          return;
         }
         state[id] = job;
-        await save(state); // Durable intent also covers an ambiguous move response.
+        journalQueue = journalQueue.then(() => save(state));
+        await journalQueue; // Serialize durable intent before each move.
         if (!inTarget) await request(`pages/${id}/move`, 'post', { parent: { type: 'data_source_id', data_source_id: CONTENT } });
         // Read after moving so destination tags/defaults are preserved too.
         if (!inTarget) page = await request(`pages/${id}`);
@@ -127,7 +131,19 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         counts.completed++;
         handled++;
         progress();
-      }
+      };
+      const remaining = jobs.entries();
+      let failure;
+      await Promise.all(Array.from({ length: Math.min(concurrency, jobs.size) }, async () => {
+        while (!failure) {
+          const next = remaining.next();
+          if (next.done) return;
+          try { await migratePage(...next.value); }
+          catch (error) { failure ||= error; }
+        }
+      }));
+      // Let in-flight pages finish before reporting failure or starting another activity.
+      if (failure) throw failure;
       const pending = counts.pending - before.pending;
       const completed = counts.completed - before.completed;
       const verified = counts.verified - before.verified;
@@ -153,13 +169,16 @@ async function main() {
   // The installed SDK exposes request(); no global API-version/dependency upgrade.
   const { Client } = require('@notionhq/client');
   const client = new Client({ auth: token, notionVersion: '2026-03-11', logger: () => {} });
+  let requestQueue = Promise.resolve();
+  let retryAfter = 0;
   const request = async (route, method = 'get', body, query) => {
     for (let attempt = 0; ; attempt++) {
-      await sleep(interval);
+      requestQueue = requestQueue.then(() => sleep(Math.max(interval, retryAfter - Date.now())));
+      await requestQueue;
       try { return await client.request({ path: route, method, body, query }); }
       catch (error) {
         if (error.status !== 429 || attempt >= 4) throw error;
-        await sleep(Math.max(1000, Number(error.headers?.get?.('retry-after') || 1) * 1000));
+        retryAfter = Math.max(retryAfter, Date.now() + Math.max(1000, Number(error.headers?.get?.('retry-after') || 1) * 1000));
       }
     }
   };

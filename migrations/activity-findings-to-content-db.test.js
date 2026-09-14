@@ -78,6 +78,46 @@ function fixture() {
   await migrate({ ...continuation, request: continuationRequest, mode: 'apply' });
   assert.ok(continuation.calls.some(c => c.route === `pages/${nextActivity}` && c.method === 'patch'));
   assert.ok(!continuation.calls.some(c => c.route === `pages/${activity}` && c.method === 'patch'));
+  for (const limit of [1, 3, 5]) {
+    const t = fixture();
+    const ids = Array.from({ length: 7 }, (_, i) => (i + 1).toString(16).repeat(32));
+    const pages = new Map(ids.map(id => [id, { parent: { page_id: source }, properties: {} }]));
+    let active = 0, peak = 0, saving = false, saved = {};
+    const request = async (route, method = 'get', body, query) => {
+      if (route === `blocks/${source}/children`) return { results: ids.map(id => ({ id, type: 'child_page' })), has_more: false };
+      const id = route.split('/')[1];
+      if (!pages.has(id)) {
+        if (route === `pages/${activity}` && method === 'patch') assert.equal(active, 0);
+        return t.request(route, method, body, query);
+      }
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise(resolve => setTimeout(resolve, 2));
+        if (route.endsWith('/move')) {
+          assert.deepEqual(saved[id], { source, activity });
+          pages.get(id).parent = { data_source_id: CONTENT };
+        } else if (method === 'patch') {
+          assert.equal(pages.get(id).parent.data_source_id, CONTENT);
+          pages.get(id).properties = body.properties;
+        }
+        return pages.get(id);
+      } finally { active--; }
+    };
+    const save = async value => {
+      assert.equal(saving, false, 'journal writes must not overlap');
+      saving = true;
+      await new Promise(resolve => setTimeout(resolve, 1));
+      saved = JSON.parse(JSON.stringify(value));
+      saving = false;
+    };
+    const result = await migrate({ ...t, request, save, mode: 'apply', env: { ...env, FINDINGS_CONCURRENCY: String(limit) } });
+    assert.equal(result.completed, ids.length);
+    assert.equal(peak, limit, 'requests overlap up to configured concurrency');
+    assert.equal(Object.keys(saved).length, ids.length);
+    assert.ok(t.logs.some(line => line.includes('7/7 handled, 0 left')));
+  }
+  await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
   const f = fixture();
   await assert.rejects(migrate({ ...f, env: {} }), /ACTIVITIES_DATA_SOURCE_ID/);
   assert.equal(f.calls.length, 0);
