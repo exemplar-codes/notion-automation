@@ -16,7 +16,7 @@ function pageId(value) {
 function extraSources(property) {
   const rich = property?.rich_text || [];
   const text = [property?.url || '', rich.map(part => part.plain_text ?? part.text?.content ?? '').join(''),
-    ...rich.map(part => part.href || part.text?.link?.url || '')].join(' ');
+    ...rich.map(part => part.href || part.text?.link?.url || (part.mention?.type === 'page' && part.mention.page?.id ? `https://notion.so/${part.mention.page.id}` : ''))].join(' ');
   const ids = new Set();
   for (const match of text.matchAll(/https:\/\/[^\s<>"'\[\]()]+/g)) {
     try { ids.add(pageId(match[0].replace(/[.,;!?]+$/, ''))); } catch { /* Ignore prose, non-Notion links and invalid page URLs. */ }
@@ -72,7 +72,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
       skipped.add(normalize(activity.id));
       continue;
     }
-    const ids = extraSources(activity.properties.finding_urls_all);
+    const ids = new Set([...extraSources(activity.properties.findings_url_all), ...extraSources(activity.properties.finding_urls_all)]);
     if (activity.properties.findings_url?.url) ids.add(pageId(activity.properties.findings_url.url));
     if (!ids.size) continue;
     const activityId = normalize(activity.id);

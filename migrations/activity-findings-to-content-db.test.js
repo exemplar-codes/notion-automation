@@ -125,6 +125,7 @@ function fixture() {
     { plain_text: 'Food', text: { link: { url: `https://food.notion.site/${other}` } } },
     { plain_text: `https://app.notion.com/p/${source}` },
   ] })], [source, other]);
+  assert.deepEqual([...extraSources({ rich_text: [{ type: 'mention', plain_text: 'Reading content', mention: { type: 'page', page: { id: source } } }] })], [source]);
   for (const onlyExtra of [false, true]) {
     const t = fixture();
     let extraScanned = false;
@@ -140,7 +141,10 @@ function fixture() {
         assert.equal(args[2].filter, undefined, 'include activities without the original URL');
         for (const row of result.results) {
           if (onlyExtra) row.properties.findings_url.url = null;
-          row.properties.finding_urls_all = { rich_text: [{ plain_text: `Food: https://notion.so/${other} https://notion.so/${source} https://example.com/ignore` }] };
+          row.properties[onlyExtra ? 'findings_url_all' : 'finding_urls_all'] = { rich_text: [
+            { type: 'mention', plain_text: 'Food content', mention: { type: 'page', page: { id: other } } },
+            { plain_text: ` https://notion.so/${source} https://example.com/ignore` },
+          ] };
         }
       }
       return result;
