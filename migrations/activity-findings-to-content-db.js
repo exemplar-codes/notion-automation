@@ -55,10 +55,16 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
     const title = activity.properties.Name?.title || [];
     names.set(normalize(activity.id), title.map(t => t.plain_text || t.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)');
   }
-  // Collect every page before moving: modifying a paginated list can skip items.
-  const jobs = new Map(Object.entries(state));
+  for (const [id, job] of Object.entries(state)) {
+    if (skipped.has(job.activity)) continue;
+    if (!/^[a-f0-9]{32}$/.test(id) || sources.get(job.source) !== job.activity) throw new Error('Journal does not match current activities');
+  }
   for (const [source, activity] of sources) {
-    log(`[activity: ${names.get(activity)}] Starting scan`);
+    const prefix = `[activity: ${names.get(activity)}]`;
+    const before = { ...counts };
+    // Finish this activity's pagination before moving its pages.
+    const jobs = new Map(Object.entries(state).filter(([, job]) => job.activity === activity));
+    log(`${prefix} Starting scan`);
     try {
       const parent = await request(`pages/${source}`);
       if (parent.archived || parent.in_trash) {
@@ -77,23 +83,8 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         jobs.set(id, job);
       }
       log(`[activity: ${names.get(activity)}] Found ${found} finding pages`);
-    } catch (error) {
-      skipped.add(activity);
-      onError(`[activity: ${names.get(activity)}]`, error);
-    }
-  }
-  for (const [id, job] of jobs) {
-    if (skipped.has(job.activity)) continue;
-    if (!/^[a-f0-9]{32}$/.test(id) || sources.get(job.source) !== job.activity) throw new Error('Journal does not match current activities');
-  }
-  for (const activity of sources.values()) {
-    if (skipped.has(activity)) continue;
-    const prefix = `[activity: ${names.get(activity)}]`;
-    const before = { ...counts };
-    log(`${prefix} Processing (${mode})`);
-    try {
+      log(`${prefix} Processing (${mode})`);
       for (const [id, job] of jobs) {
-        if (job.activity !== activity) continue;
         let page = await request(`pages/${id}`);
         if (page.archived || page.in_trash) {
           log(`${prefix} Skipped: finding is trashed`);

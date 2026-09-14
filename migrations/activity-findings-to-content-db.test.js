@@ -64,14 +64,17 @@ function fixture() {
   const nextActivity = 'd'.repeat(32), nextSource = '2'.repeat(32);
   continuation.fail(true);
   const continuationRequest = async (...args) => {
-    if (args[0] === `pages/${nextSource}`) return { parent: { page_id: nextActivity } };
+    if (args[0] === `pages/${nextSource}`) {
+      assert.ok(continuation.calls.some(c => c.route.endsWith('/move')), 'move before scanning next activity');
+      return { parent: { page_id: nextActivity } };
+    }
     if (args[0] === `blocks/${nextSource}/children`) return { results: [], has_more: false };
     if (args[0] === `pages/${nextActivity}`) { continuation.calls.push({ route: args[0], method: args[1] }); return {}; }
     const result = await continuation.request(...args);
     if (args[0].endsWith('/query') && !args[2].start_cursor) result.results.push({ id: nextActivity, properties: { findings_url: { url: `https://notion.so/${nextSource}` } } });
     return result;
   };
-  // Put the second activity after Startup in the deterministic order.
+  // The first activity must attempt its move before the next activity is scanned.
   await migrate({ ...continuation, request: continuationRequest, mode: 'apply' });
   assert.ok(continuation.calls.some(c => c.route === `pages/${nextActivity}` && c.method === 'patch'));
   assert.ok(!continuation.calls.some(c => c.route === `pages/${activity}` && c.method === 'patch'));
