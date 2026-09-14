@@ -5,10 +5,11 @@ const env = { ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CON
 const activity = 'a'.repeat(32), source = 'b'.repeat(32), child = 'c'.repeat(32), other = 'd'.repeat(32);
 function fixture() {
   const state = {}, calls = [], logs = [];
+  let tags = [{ name: 'existing' }];
   let parent = { page_id: source }, related = [], failUpdate = false, conflict = false;
   const request = async (route, method = 'get', body, query) => {
     calls.push({ route, method, body, query });
-    if (route === `data_sources/${CONTENT}`) return { properties: { Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
+    if (route === `data_sources/${CONTENT}`) return { properties: { Tags: { type: 'multi_select' }, Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
     if (route === `data_sources/${ACTIVITIES}`) return { properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { type: 'url' }, findings_synced_at: { type: 'date' } } };
     if (route.endsWith('/query')) return body.start_cursor ? { results: [], has_more: false } : { results: [{ id: activity, properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { url: `https://app.notion.com/p/${source}` } } }], has_more: true, next_cursor: 'activities-2' };
     if (route === `pages/${source}`) return { parent: { page_id: activity } };
@@ -26,9 +27,11 @@ function fixture() {
     if (route === `pages/${child}` && method === 'patch') {
       if (failUpdate) throw new Error('simulated update failure');
       related = body.properties.Activity.relation;
+      tags = body.properties.Tags.multi_select;
+      assert.deepEqual(tags, [{ name: 'existing' }, { name: 'migration' }]);
       return {};
     }
-    if (route === `pages/${child}`) return { parent, properties: { Activity: { relation: conflict ? [{ id: other }] : related } } };
+    if (route === `pages/${child}`) return { parent, properties: { Tags: { multi_select: tags }, Activity: { relation: conflict ? [{ id: other }] : related } } };
     throw new Error(`Unexpected call: ${route}`);
   };
   return { env, state, calls, logs, log: line => logs.push(line), request, save: async value => assert.equal(value, state), fail: value => { failUpdate = value; }, conflict: () => { conflict = true; } };

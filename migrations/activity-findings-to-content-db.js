@@ -33,6 +33,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
     return rows;
   }
   const schema = await request(`data_sources/${CONTENT}`);
+  if (schema.properties?.Tags?.type !== 'multi_select') throw new Error('Tags must be a multi-select property');
   const relation = schema.properties?.Activity;
   if (relation?.type !== 'relation' || normalize(relation.relation?.data_source_id) !== normalize(ACTIVITIES)) throw new Error('Activity relation does not target activities-db');
   const activitiesSchema = await request(`data_sources/${ACTIVITIES}`);
@@ -83,7 +84,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         const prop = page.properties?.Activity;
         const related = prop?.relation || [];
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
-        if (inTarget && related.some(r => normalize(r.id) === job.activity)) {
+        if (inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
           counts.verified++;
           continue;
         }
@@ -92,9 +93,15 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         state[id] = job;
         await save(state); // Durable intent also covers an ambiguous move response.
         if (!inTarget) await request(`pages/${id}/move`, 'post', { parent: { type: 'data_source_id', data_source_id: CONTENT } });
-        await request(`pages/${id}`, 'patch', { properties: { Activity: { relation: [{ id: job.activity }] } } });
+        // Read after moving so destination tags/defaults are preserved too.
+        if (!inTarget) page = await request(`pages/${id}`);
+        const tags = [...new Set([...(page.properties?.Tags?.multi_select || []).map(tag => tag.name), 'migration'])];
+        await request(`pages/${id}`, 'patch', { properties: {
+          Activity: { relation: [{ id: job.activity }] },
+          Tags: { multi_select: tags.map(name => ({ name })) },
+        } });
         page = await request(`pages/${id}`);
-        if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity) throw new Error('Post-write verification failed');
+        if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity || !page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) throw new Error('Post-write verification failed');
         counts.completed++;
       }
       const pending = counts.pending - before.pending;
@@ -117,7 +124,7 @@ async function main() {
   if (args.some(a => !['--apply', '--verify'].includes(a)) || args.length > 1) throw new Error('Use --apply OR --verify, or no arguments for dry-run');
   require('dotenv').config({ quiet: true });
   const token = process.env.NOTION_API_TOKEN || process.env.NOTION_TOKEN || process.env.NOTION_API_KEY;
-  if (!token) throw new Error('Missing Notion API token');
+  if (!token) throw new Error('Missing Notion API token: $NOTION_API_KEY');
   const interval = Number(process.env.RATE_LIMITING_INTERVAL || 350);
   if (!Number.isFinite(interval) || interval < 350) throw new Error('Invalid RATE_LIMITING_INTERVAL');
   // The installed SDK exposes request(); no global API-version/dependency upgrade.
