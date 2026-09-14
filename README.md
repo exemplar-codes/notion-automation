@@ -87,7 +87,7 @@ assignments, archived candidates, or pages moved elsewhere. All activities and t
 **Recovery:** `.findings-state/journal.json` records page IDs and their activity
 before moving. It is private, gitignored state, separate from aggregate reports.
 Retain it between runs: if relation assignment fails after moving, rerunning repairs
-that same page. Completed entries let `--verify` check both destination and Activity.
+that same page. Entries are deleted after successful verification; the journal contains only unfinished work. Old completed entries are verified and removed on the next apply run. `--verify` checks remaining recovery entries and inboxes.
 A lost journal loses that recovery mapping. No credentials or page content are
 written there; output includes activity names with `[activity: activity_name]` prefixes, findings counts
 (including zero), processing mode and completion/failure status, plus aggregate counts. A crash may leave

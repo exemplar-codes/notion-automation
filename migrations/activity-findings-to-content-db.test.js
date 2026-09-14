@@ -114,7 +114,7 @@ function fixture() {
     const result = await migrate({ ...t, request, save, mode: 'apply', env: { ...env, FINDINGS_CONCURRENCY: String(limit) } });
     assert.equal(result.completed, ids.length);
     assert.equal(peak, limit, 'requests overlap up to configured concurrency');
-    assert.equal(Object.keys(saved).length, ids.length);
+    assert.equal(Object.keys(saved).length, 0);
     assert.ok(t.logs.some(line => line.includes('7/7 handled, 0 left')));
   }
   await assert.rejects(migrate({ ...fixture(), env: { ...env, FINDINGS_CONCURRENCY: '0' } }), /positive integer/);
@@ -144,7 +144,14 @@ function fixture() {
   assert.equal((await migrate({ ...f, mode: 'apply' })).completed, 1);
   assert.equal(f.calls.filter(c => c.route.endsWith('/move')).length, 1, 'retry must not move twice');
   assert.equal((await migrate({ ...f, mode: 'verify' })).pending, 0);
+  assert.deepEqual(f.state, {});
+  const readsBefore = f.calls.filter(c => c.route === `pages/${child}`).length;
+  assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 0);
+  assert.equal(f.calls.filter(c => c.route === `pages/${child}`).length, readsBefore, 'completed pages are not revisited');
+  // Older journals are pruned after verifying an already completed entry.
+  f.state[child] = { source, activity };
   assert.equal((await migrate({ ...f, mode: 'apply' })).verified, 1);
+  assert.deepEqual(f.state, {});
   assert.ok(f.logs.includes('[activity: Startup] Found 0 finding pages'));
   assert.ok(f.logs.includes('[activity: Startup] Done: moved 0, already migrated 1'));
   assert.ok(f.logs.includes('[activity: Startup] Progress (apply): 1/1 handled, 0 left; completed 1, verified 0, skipped 0'));
@@ -153,6 +160,7 @@ function fixture() {
   await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
   assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
   assert.ok(hosted.logs.every(line => !line.includes('Startup')));
+  f.state[child] = { source, activity };
   f.conflict();
   await migrate({ ...f, mode: 'apply' });
   assert.ok(f.logs.at(-1).includes('conflicting Activity'));

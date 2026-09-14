@@ -22,6 +22,15 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
   const concurrency = Number(env.FINDINGS_CONCURRENCY || 5);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('FINDINGS_CONCURRENCY must be a positive integer');
   let journalQueue = Promise.resolve();
+  const forget = async id => {
+    journalQueue = journalQueue.then(async () => {
+      const job = state[id];
+      delete state[id];
+      try { await save(state); }
+      catch (error) { state[id] = job; throw error; }
+    });
+    await journalQueue;
+  };
   const counts = { pending: 0, completed: 0, verified: 0 };
   async function list(route, method = 'get', body = {}) {
     const rows = [];
@@ -105,6 +114,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         const related = prop?.relation || [];
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
         if (inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
+          if (mode === 'apply') await forget(id);
           counts.verified++;
           handled++;
           progress();
@@ -129,6 +139,7 @@ async function migrate({ request, state, save, mode = 'dry-run', env = process.e
         } });
         page = await request(`pages/${id}`);
         if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity || !page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) throw new Error('Post-write verification failed');
+        await forget(id);
         counts.completed++;
         handled++;
         progress();
