@@ -190,6 +190,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
       const completed = counts.completed - before.completed;
       const verified = counts.verified - before.verified;
       if (pending === completed) {
+        log(`${prefix} ${jobs.size === 0 ? 'No findings; updating' : 'Updating'} last-sync timestamp…`);
         await request(`pages/${activity}`, 'patch', { properties: { findings_synced_at: { date: { start: new Date().toISOString() } } } });
       }
       log(`${prefix} Done: moved ${completed}, already migrated ${verified}`);
