@@ -1,19 +1,24 @@
 const assert = require('node:assert/strict');
-const { migrate, pageId, extraSources } = require('./activity-findings-to-content-db');
+const { migrate, pageId, extraSources, leadingUrl } = require('./activity-findings-to-content-db');
 const ACTIVITIES = 'e'.repeat(32), CONTENT = 'f'.repeat(32);
 const env = { ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT };
 const activity = 'a'.repeat(32), source = 'b'.repeat(32), child = 'c'.repeat(32), other = 'd'.repeat(32);
-function fixture() {
+function fixture(firstBlock = { type: 'paragraph', paragraph: { rich_text: [{ plain_text: 'https://example.com/article' }] } }) {
   const state = {}, calls = [], logs = [];
+  let metadata = { URL: { url: 'https://example.com/existing' } };
   let tags = [{ name: 'existing' }];
   let parent = { page_id: source }, related = [], failUpdate = false, conflict = false;
   const request = async (route, method = 'get', body, query) => {
     calls.push({ route, method, body, query });
-    if (route === `data_sources/${CONTENT}`) return { properties: { Tags: { type: 'multi_select' }, Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
+    if (route === `data_sources/${CONTENT}`) return { properties: { Type: { type: 'select' }, URL: { type: 'url' }, Tags: { type: 'multi_select' }, Activity: { type: 'relation', relation: { data_source_id: ACTIVITIES } } } };
     if (route === `data_sources/${ACTIVITIES}`) return { properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { type: 'url' }, findings_synced_at: { type: 'date' } } };
     if (route.endsWith('/query')) return body.start_cursor ? { results: [], has_more: false } : { results: [{ id: activity, properties: { Name: { title: [{ plain_text: 'Startup' }] }, findings_url: { url: `https://app.notion.com/p/${source}` } } }], has_more: true, next_cursor: 'activities-2' };
     if (route === `pages/${source}`) return { parent: { page_id: activity }, properties: { title: { title: [{ plain_text: 'Startup content' }] } } };
     if (route === `blocks/${source}/children`) return query.start_cursor ? { results: parent.page_id ? [{ id: child, type: 'child_page' }] : [], has_more: false } : { results: [{ id: other, type: 'link_to_page' }], has_more: true, next_cursor: 'children-2' };
+    if (route === `blocks/${child}/children`) {
+      assert.equal(query.page_size, 1);
+      return { results: firstBlock ? [firstBlock] : [] };
+    }
     if (route.endsWith('/move')) {
       assert.deepEqual(state[child], { source, activity }, 'intent saved before move');
       assert.deepEqual(body.parent, { type: 'data_source_id', data_source_id: CONTENT });
@@ -26,12 +31,16 @@ function fixture() {
     }
     if (route === `pages/${child}` && method === 'patch') {
       if (failUpdate) throw new Error('simulated update failure');
+      assert.equal(body.properties.Type.select.name, 'Article');
+      if (leadingUrl(firstBlock)) assert.equal(body.properties.URL.url, leadingUrl(firstBlock));
+      else assert.equal(body.properties.URL, undefined, 'no leading URL must preserve existing URL');
+      metadata = { ...metadata, ...body.properties };
       related = body.properties.Activity.relation;
       tags = body.properties.Tags.multi_select;
       assert.deepEqual(tags, [{ name: 'existing' }, { name: 'migration' }]);
       return {};
     }
-    if (route === `pages/${child}`) return { parent, properties: { Tags: { multi_select: tags }, Activity: { relation: conflict ? [{ id: other }] : related } } };
+    if (route === `pages/${child}`) return { parent, properties: { ...metadata, Tags: { multi_select: tags }, Activity: { relation: conflict ? [{ id: other }] : related } } };
     throw new Error(`Unexpected call: ${route}`);
   };
   return { env, state, calls, logs, log: line => logs.push(line), request, save: async value => assert.equal(value, state), fail: value => { failUpdate = value; }, conflict: () => { conflict = true; } };
@@ -86,6 +95,7 @@ function fixture() {
     const pages = new Map(ids.map(id => [id, { parent: { page_id: source }, properties: {} }]));
     let active = 0, peak = 0, saving = false, saved = {};
     const request = async (route, method = 'get', body, query) => {
+      if (route.startsWith('blocks/') && route !== `blocks/${source}/children`) return { results: [] };
       if (route === `blocks/${source}/children`) return { results: ids.map(id => ({ id, type: 'child_page' })), has_more: false };
       const id = route.split('/')[1];
       if (!pages.has(id)) {
@@ -96,7 +106,11 @@ function fixture() {
       peak = Math.max(peak, active);
       try {
         await new Promise(resolve => setTimeout(resolve, 2));
-        if (route.endsWith('/move')) {
+        if (route === `blocks/${child}/children`) {
+      assert.equal(query.page_size, 1);
+      return { results: firstBlock ? [firstBlock] : [] };
+    }
+    if (route.endsWith('/move')) {
           assert.deepEqual(saved[id], { source, activity });
           pages.get(id).parent = { data_source_id: CONTENT };
         } else if (method === 'patch') {
@@ -155,6 +169,14 @@ function fixture() {
     assert.equal(t.calls.filter(c => c.route === `pages/${source}`).length, 1, 'deduplicate source URLs');
     assert.equal(t.calls.filter(c => c.route === `pages/${activity}` && c.method === 'patch').length, 1);
   }
+  assert.equal(leadingUrl({ type: 'paragraph', paragraph: { rich_text: [{ text: { content: ' https://example.com/path?q=1' } }, { plain_text: '&x=2 notes' }] } }), 'https://example.com/path?q=1&x=2');
+  assert.equal(leadingUrl({ type: 'bookmark', bookmark: { url: 'https://example.com/bookmark' } }), 'https://example.com/bookmark');
+  for (const text of ['Read https://example.com/later', 'javascript:alert(1)', 'https://', '']) {
+    const first = { type: 'paragraph', paragraph: { rich_text: [{ plain_text: text }] } };
+    assert.equal(leadingUrl(first), null);
+    assert.equal((await migrate(fixture(first))).completed, 1);
+  }
+  assert.equal((await migrate(fixture(null))).completed, 1);
   const fresh = fixture();
   await migrate({ ...fresh });
   assert.deepEqual(fresh.calls.filter(c => c.route === `pages/${child}` || c.route === `pages/${child}/move`).map(c => [c.route, c.method]), [

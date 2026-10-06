@@ -23,6 +23,17 @@ function extraSources(property) {
   }
   return ids;
 }
+function leadingUrl(block) {
+  const value = block?.[block.type];
+  const text = (value?.rich_text || []).map(part => part.plain_text ?? part.text?.content ?? '').join('').trimStart();
+  const candidate = text.match(/^https?:\/\/[^\s<>]+/i)?.[0]
+    || (['bookmark', 'embed', 'link_preview'].includes(block?.type) ? value?.url : null);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return ['http:', 'https:'].includes(url.protocol) ? candidate : null;
+  } catch { return null; }
+}
 async function migrate({ request, state, save, env = process.env, log = console.log, onError = (prefix, error) => log(`${prefix} Failed: ${error.message}`) }) {
   const ACTIVITIES = env.ACTIVITIES_DATA_SOURCE_ID;
   const CONTENT = env.CONTENT_DATA_SOURCE_ID;
@@ -56,6 +67,8 @@ async function migrate({ request, state, save, env = process.env, log = console.
   }
   const schema = await request(`data_sources/${CONTENT}`);
   if (schema.properties?.Tags?.type !== 'multi_select') throw new Error('Tags must be a multi-select property');
+  if (schema.properties?.Type?.type !== 'select') throw new Error('Type must be a select property');
+  if (schema.properties?.URL?.type !== 'url') throw new Error('URL must be a URL property');
   const relation = schema.properties?.Activity;
   if (relation?.type !== 'relation' || normalize(relation.relation?.data_source_id) !== normalize(ACTIVITIES)) throw new Error('Activity relation does not target activities-db');
   const activitiesSchema = await request(`data_sources/${ACTIVITIES}`);
@@ -145,7 +158,10 @@ async function migrate({ request, state, save, env = process.env, log = console.
         const prop = page.properties?.Activity;
         const related = prop?.relation || [];
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
-        if (inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
+        const first = await request(`blocks/${id}/children`, 'get', undefined, { page_size: 1 });
+        const url = leadingUrl(first.results[0]);
+        const metadataMatches = page.properties?.Type?.select?.name === 'Article' && (!url || page.properties?.URL?.url === url);
+        if (metadataMatches && inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
           await forget(id);
           counts.verified++;
           handled++;
@@ -163,9 +179,12 @@ async function migrate({ request, state, save, env = process.env, log = console.
         await request(`pages/${id}`, 'patch', { properties: {
           Activity: { relation: [{ id: job.activity }] },
           Tags: { multi_select: tags.map(name => ({ name })) },
+          Type: { select: { name: 'Article' } },
+          ...(url ? { URL: { url } } : {}),
         } });
         page = await request(`pages/${id}`);
         if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity || !page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) throw new Error('Post-write verification failed');
+        if (page.properties?.Type?.select?.name !== 'Article' || (url && page.properties?.URL?.url !== url)) throw new Error('Content metadata verification failed');
         await forget(id);
         counts.completed++;
         handled++;
@@ -245,7 +264,7 @@ async function main() {
   });
   console.log(JSON.stringify(counts));
 }
-module.exports = { migrate, pageId, extraSources };
+module.exports = { migrate, pageId, extraSources, leadingUrl };
 if (require.main === module) main().catch(error => {
   console.error(`Migration failed (${error.code || error.status || (process.env.GITHUB_ACTIONS === 'true' ? 'validation' : error.message)}). On hosted runs, an interrupted move may require manual Activity repair; local journal retained.`);
   process.exitCode = 1;

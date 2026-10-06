@@ -108,7 +108,7 @@ are no workspace ID defaults. The older session-url migration uses
 `CONTENT_DATABASE_ID`, with `DATABASE_ID` retained as a legacy fallback.
 
 `migrations/activity-findings-to-content-db.js` uses each activity's
-`findings_url` to move its direct child pages into content-db and set `Activity`, adding `migration` to `Tags` while preserving existing tags.
+`findings_url` to move its direct child pages into content-db and set `Activity`, adding `migration` to `Tags` while preserving existing tags. Every migrated row gets `Type = Article`. If its first body block starts with an HTTP(S) URL (or is a bookmark/embed/link preview), that URL is saved in `URL`; otherwise the existing URL is left unchanged. This reads only the first block, adding one API call per finding.
 Optional `findings_url_all` text (also accepts `finding_urls_all`) can contain additional Notion page URLs (plain text, hyperlinks, or Notion page mentions). These are combined with `findings_url` and deduplicated per activity; other links and text are ignored. Activities with only additional URLs are included too. All sources for an activity are scanned before its findings are moved. The Active checkbox does not filter activities.
 The original page ID, body and nested content stay with the moved page. It leaves
 its old parent's child-page list. Links to pages, inline databases and nested
