@@ -136,3 +136,4 @@ dist
 
 # Findings migration recovery journal (private page IDs)
 .findings-state/
+migrations/readera-unzipped-bak/*
