@@ -225,7 +225,7 @@ async function uploadBooksToNotion(booksToUpload) {
       throw new Error(`Unknown existing Notion status ${JSON.stringify(book.status)} for ${name}`);
     }
     const importedTags = Array.isArray(book.tags) ? book.tags : [];
-    const tagNames = [...new Set([...importedTags, "read era-migration"]
+    const tagNames = [...new Set([...importedTags, "readera-migration"]
       .filter((tag) => typeof tag === "string")
       .map((tag) => tag.trim())
       .filter(Boolean))];
