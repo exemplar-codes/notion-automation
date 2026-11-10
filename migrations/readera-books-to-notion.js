@@ -184,12 +184,14 @@ async function uploadBooksToNotion(booksToUpload) {
     URL: "url",
     Progress: "rich_text",
     Type: "select",
+    Tags: "multi_select",
   };
   for (const [name, type] of Object.entries(expected)) {
     if (properties[name]?.type !== type) {
       throw new Error(`Expected existing Notion property ${name} of type ${type}; found ${properties[name]?.type || "missing"}`);
     }
   }
+  // New multi-select options are permitted for imported tags; existing rows are never updated.
   const statuses = new Set((properties.Status.status?.options || []).map((o) => o.name));
   const types = new Set((properties.Type.select?.options || []).map((o) => o.name));
   if (!["Todo", "Paused", "Done"].every((value) => statuses.has(value)) || !types.has("Book")) {
@@ -222,9 +224,15 @@ async function uploadBooksToNotion(booksToUpload) {
     if (!statuses.has(book.status)) {
       throw new Error(`Unknown existing Notion status ${JSON.stringify(book.status)} for ${name}`);
     }
+    const importedTags = Array.isArray(book.tags) ? book.tags : [];
+    const tagNames = [...new Set([...importedTags, "read era-migration"]
+      .filter((tag) => typeof tag === "string")
+      .map((tag) => tag.trim())
+      .filter(Boolean))];
     const values = {
       Name: { title: [{ text: { content: name.slice(0, 2000) } }] },
       Type: { select: { name: "Book" } },
+      Tags: { multi_select: tagNames.map((name) => ({ name })) },
       Status: { status: { name: book.status } },
       Progress: { rich_text: [{ text: { content: String(book.current_page ?? 0) } }] },
     };
@@ -237,7 +245,7 @@ async function uploadBooksToNotion(booksToUpload) {
         throw new Error(`Invalid URL for ${name}: ${book.URL}`);
       }
     }
-    // No updates/upserts, no property creation, and no new select options.
+    // No existing-page updates/upserts or property creation. Notion may create missing Tags options.
     await api("POST", "/pages", {
       parent: { type: "data_source_id", data_source_id: dataSourceId },
       properties: values,
