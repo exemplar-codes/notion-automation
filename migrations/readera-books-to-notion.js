@@ -150,9 +150,109 @@ const sample_output = {
   ],
 };
 
-if (UPLOAD_WITH_DEDUP) {
-  // finish the code here please, dedup based on name
-  // ignore id, citations and bookmarks for now
-  // you need to upload a row in content-db (CONTENT_DATA_SOURCE_ID env)
-  // use sample_output above
+
+async function uploadBooksToNotion(booksToUpload) {
+  const token = process.env.NOTION_API_KEY;
+  const dataSourceId = process.env.CONTENT_DATA_SOURCE_ID;
+  if (!token || !dataSourceId) {
+    throw new Error("NOTION_API_KEY and CONTENT_DATA_SOURCE_ID are required");
+  }
+
+  // Notion's 2025-09-03 API separates data sources from databases.
+  const api = async (method, path, body) => {
+    const response = await fetch(`https://api.notion.com/v1${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": "2025-09-03",
+        "Content-Type": "application/json",
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(`Notion ${method} ${path}: ${response.status} ${JSON.stringify(result)}`);
+    }
+    return result;
+  };
+
+  const source = await api("GET", `/data_sources/${encodeURIComponent(dataSourceId)}`);
+  const properties = source.properties || {};
+  const expected = {
+    Name: "title",
+    Status: "status",
+    URL: "url",
+    Progress: "rich_text",
+    Type: "select",
+  };
+  for (const [name, type] of Object.entries(expected)) {
+    if (properties[name]?.type !== type) {
+      throw new Error(`Expected existing Notion property ${name} of type ${type}; found ${properties[name]?.type || "missing"}`);
+    }
+  }
+  const statuses = new Set((properties.Status.status?.options || []).map((o) => o.name));
+  const types = new Set((properties.Type.select?.options || []).map((o) => o.name));
+  if (!["Todo", "Paused", "Done"].every((value) => statuses.has(value)) || !types.has("Book")) {
+    throw new Error("Existing Notion Status options Todo/Paused/Done and Type option Book are required; refusing to create new options");
+  }
+
+  // Read every page, not only the first 100, before deduplicating.
+  const existingNames = new Set();
+  let cursor;
+  do {
+    const result = await api("POST", `/data_sources/${encodeURIComponent(dataSourceId)}/query`, {
+      page_size: 100,
+      ...(cursor ? { start_cursor: cursor } : {}),
+    });
+    for (const page of result.results || []) {
+      const title = (page.properties?.Name?.title || []).map((part) => part.plain_text).join("").trim();
+      if (title) existingNames.add(title.toLocaleLowerCase());
+    }
+    cursor = result.has_more ? result.next_cursor : null;
+    if (result.has_more && !cursor) throw new Error("Notion pagination did not return a cursor");
+  } while (cursor);
+
+  let created = 0;
+  let skipped = 0;
+  for (const book of booksToUpload) {
+    const name = String(book.name || "").trim();
+    if (!name) { skipped++; continue; }
+    const key = name.toLocaleLowerCase();
+    if (existingNames.has(key)) { skipped++; continue; }
+    if (!statuses.has(book.status)) {
+      throw new Error(`Unknown existing Notion status ${JSON.stringify(book.status)} for ${name}`);
+    }
+    const values = {
+      Name: { title: [{ text: { content: name.slice(0, 2000) } }] },
+      Type: { select: { name: "Book" } },
+      Status: { status: { name: book.status } },
+      Progress: { rich_text: [{ text: { content: String(book.current_page ?? 0) } }] },
+    };
+    if (book.URL) {
+      try {
+        const url = new URL(book.URL);
+        if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid URL protocol");
+        values.URL = { url: url.toString() };
+      } catch {
+        throw new Error(`Invalid URL for ${name}: ${book.URL}`);
+      }
+    }
+    // No updates/upserts, no property creation, and no new select options.
+    await api("POST", "/pages", {
+      parent: { type: "data_source_id", data_source_id: dataSourceId },
+      properties: values,
+    });
+    existingNames.add(key);
+    created++;
+    console.log(`Created: ${name}`);
+  }
+  console.log(`ReadEra migration complete: ${created} created, ${skipped} skipped`);
 }
+
+if (UPLOAD_WITH_DEDUP) {
+  uploadBooksToNotion(exportable_books).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
