@@ -150,7 +150,6 @@ const sample_output = {
   ],
 };
 
-
 async function uploadBooksToNotion(booksToUpload) {
   const token = process.env.NOTION_API_KEY;
   const dataSourceId = process.env.CONTENT_DATA_SOURCE_ID;
@@ -171,12 +170,17 @@ async function uploadBooksToNotion(booksToUpload) {
     });
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(`Notion ${method} ${path}: ${response.status} ${JSON.stringify(result)}`);
+      throw new Error(
+        `Notion ${method} ${path}: ${response.status} ${JSON.stringify(result)}`,
+      );
     }
     return result;
   };
 
-  const source = await api("GET", `/data_sources/${encodeURIComponent(dataSourceId)}`);
+  const source = await api(
+    "GET",
+    `/data_sources/${encodeURIComponent(dataSourceId)}`,
+  );
   const properties = source.properties || {};
   const expected = {
     Name: "title",
@@ -188,58 +192,94 @@ async function uploadBooksToNotion(booksToUpload) {
   };
   for (const [name, type] of Object.entries(expected)) {
     if (properties[name]?.type !== type) {
-      throw new Error(`Expected existing Notion property ${name} of type ${type}; found ${properties[name]?.type || "missing"}`);
+      throw new Error(
+        `Expected existing Notion property ${name} of type ${type}; found ${properties[name]?.type || "missing"}`,
+      );
     }
   }
   // New multi-select options are permitted for imported tags; existing rows are never updated.
-  const statuses = new Set((properties.Status.status?.options || []).map((o) => o.name));
-  const types = new Set((properties.Type.select?.options || []).map((o) => o.name));
-  if (!["Todo", "Paused", "Done"].every((value) => statuses.has(value)) || !types.has("Book")) {
-    throw new Error("Existing Notion Status options Todo/Paused/Done and Type option Book are required; refusing to create new options");
+  const statuses = new Set(
+    (properties.Status.status?.options || []).map((o) => o.name),
+  );
+  const types = new Set(
+    (properties.Type.select?.options || []).map((o) => o.name),
+  );
+  if (
+    !["Todo", "Paused", "Done"].every((value) => statuses.has(value)) ||
+    !types.has("Book")
+  ) {
+    throw new Error(
+      "Existing Notion Status options Todo/Paused/Done and Type option Book are required; refusing to create new options",
+    );
   }
 
   // Read every page, not only the first 100, before deduplicating.
   const existingNames = new Set();
   let cursor;
   do {
-    const result = await api("POST", `/data_sources/${encodeURIComponent(dataSourceId)}/query`, {
-      page_size: 100,
-      ...(cursor ? { start_cursor: cursor } : {}),
-    });
+    const result = await api(
+      "POST",
+      `/data_sources/${encodeURIComponent(dataSourceId)}/query`,
+      {
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      },
+    );
     for (const page of result.results || []) {
-      const title = (page.properties?.Name?.title || []).map((part) => part.plain_text).join("").trim();
+      const title = (page.properties?.Name?.title || [])
+        .map((part) => part.plain_text)
+        .join("")
+        .trim();
       if (title) existingNames.add(title.toLocaleLowerCase());
     }
     cursor = result.has_more ? result.next_cursor : null;
-    if (result.has_more && !cursor) throw new Error("Notion pagination did not return a cursor");
+    if (result.has_more && !cursor)
+      throw new Error("Notion pagination did not return a cursor");
   } while (cursor);
 
   let created = 0;
   let skipped = 0;
+  let index = -1;
   for (const book of booksToUpload) {
+    index++;
     const name = String(book.name || "").trim();
-    if (!name) { skipped++; continue; }
+    if (!name) {
+      skipped++;
+      continue;
+    }
     const key = name.toLocaleLowerCase();
-    if (existingNames.has(key)) { skipped++; continue; }
+    if (existingNames.has(key)) {
+      skipped++;
+      continue;
+    }
     if (!statuses.has(book.status)) {
-      throw new Error(`Unknown existing Notion status ${JSON.stringify(book.status)} for ${name}`);
+      throw new Error(
+        `Unknown existing Notion status ${JSON.stringify(book.status)} for ${name}`,
+      );
     }
     const importedTags = Array.isArray(book.tags) ? book.tags : [];
-    const tagNames = [...new Set([...importedTags, "readera-migration"]
-      .filter((tag) => typeof tag === "string")
-      .map((tag) => tag.trim())
-      .filter(Boolean))];
+    const tagNames = [
+      ...new Set(
+        [...importedTags, "readera-migration"]
+          .filter((tag) => typeof tag === "string")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      ),
+    ];
     const values = {
       Name: { title: [{ text: { content: name.slice(0, 2000) } }] },
       Type: { select: { name: "Book" } },
       Tags: { multi_select: tagNames.map((name) => ({ name })) },
       Status: { status: { name: book.status } },
-      Progress: { rich_text: [{ text: { content: String(book.current_page ?? 0) } }] },
+      Progress: {
+        rich_text: [{ text: { content: String(book.current_page ?? 0) } }],
+      },
     };
     if (book.URL) {
       try {
         const url = new URL(book.URL);
-        if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid URL protocol");
+        if (!["https:", "http:"].includes(url.protocol))
+          throw new Error("Invalid URL protocol");
         values.URL = { url: url.toString() };
       } catch {
         throw new Error(`Invalid URL for ${name}: ${book.URL}`);
@@ -252,9 +292,12 @@ async function uploadBooksToNotion(booksToUpload) {
     });
     existingNames.add(key);
     created++;
-    console.log(`Created: ${name}`);
+    console.log(`Created: ${name}, progress`, index, "/", booksToUpload.length);
+    await new Promise((r) => setTimeout(r, 2000));
   }
-  console.log(`ReadEra migration complete: ${created} created, ${skipped} skipped`);
+  console.log(
+    `ReadEra migration complete: ${created} created, ${skipped} skipped`,
+  );
 }
 
 if (UPLOAD_WITH_DEDUP) {
@@ -263,4 +306,3 @@ if (UPLOAD_WITH_DEDUP) {
     process.exitCode = 1;
   });
 }
-
