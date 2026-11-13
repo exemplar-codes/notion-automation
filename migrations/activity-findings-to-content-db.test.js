@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { migrate, pageId, extraSources, leadingUrl } = require('./activity-findings-to-content-db');
+const { migrate, pageId, extraSources, leadingUrl, formatError } = require('./activity-findings-to-content-db');
 const ACTIVITIES = 'e'.repeat(32), CONTENT = 'f'.repeat(32);
 const env = { ACTIVITIES_DATA_SOURCE_ID: ACTIVITIES, CONTENT_DATA_SOURCE_ID: CONTENT };
 const activity = 'a'.repeat(32), source = 'b'.repeat(32), child = 'c'.repeat(32), other = 'd'.repeat(32);
@@ -212,6 +212,19 @@ function fixture(firstBlock = { type: 'paragraph', paragraph: { rich_text: [{ pl
   await migrate({ ...hosted, env: { ...env, GITHUB_ACTIONS: 'true' } });
   assert.ok(hosted.logs.some(line => line.includes('[activity: #1] Progress')));
   assert.ok(hosted.logs.every(line => !line.includes('Startup')));
+  const inaccessible = fixture();
+  const hostedErrors = [];
+  const notFound = Object.assign(new Error(`Could not find page with ID: ${source}.\nShare it with the integration.`), {
+    code: 'object_not_found', status: 404, request_id: 'request-id',
+  });
+  await migrate({
+    ...inaccessible,
+    env: { ...env, GITHUB_ACTIONS: 'true' },
+    request: (...args) => args[0] === `pages/${source}` ? Promise.reject(notFound) : inaccessible.request(...args),
+    onError: (prefix, error) => hostedErrors.push(`${prefix} Failed: ${formatError(error)}`),
+  });
+  assert.equal(hostedErrors[0], `[activity: #1] [content: #1 https://notion.so/${source}] Failed: object_not_found | GET /v1/pages/${source} | Could not find page with ID: ${source}. Share it with the integration. | request request-id`);
+  assert.ok(!hostedErrors[0].includes('Startup'), 'hosted errors must not expose Notion titles');
   f.state[child] = { source, activity };
   f.conflict();
   await migrate({ ...f });
