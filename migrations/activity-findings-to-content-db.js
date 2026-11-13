@@ -6,6 +6,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { setTimeout: sleep } = require('node:timers/promises');
 const normalize = value => value?.replace(/-/g, '').toLowerCase();
+const singleLine = value => String(value ?? '').replace(/[\r\n\x1b]/g, ' ').replace(/\s+/g, ' ').trim();
+function formatError(error) {
+  const code = error?.code || error?.status || error?.name || 'Error';
+  const operation = error?.notionOperation;
+  const message = singleLine(error?.message || error);
+  const requestId = error?.request_id || error?.body?.request_id;
+  return [code, operation, message && message !== code ? message : null, requestId ? `request ${requestId}` : null].filter(Boolean).join(' | ');
+}
 function pageId(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || !(['app.notion.com', 'www.notion.so', 'notion.so', 'notion.site'].includes(url.hostname) || url.hostname.endsWith('.notion.site'))) throw new Error('Invalid findings_url host');
@@ -42,6 +50,15 @@ async function migrate({ request, state, save, env = process.env, log = console.
   }
   const concurrency = Number(env.FINDINGS_CONCURRENCY || 5);
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('FINDINGS_CONCURRENCY must be a positive integer');
+  const notionRequest = async (route, method = 'get', body, query) => {
+    try { return await request(route, method, body, query); }
+    catch (error) {
+      if (error && typeof error === 'object' && !error.notionOperation) {
+        try { error.notionOperation = `${method.toUpperCase()} /v1/${route}`; } catch { /* Preserve the original error if it is immutable. */ }
+      }
+      throw error;
+    }
+  };
   let journalQueue = Promise.resolve();
   const forget = async id => {
     journalQueue = journalQueue.then(async () => {
@@ -58,20 +75,20 @@ async function migrate({ request, state, save, env = process.env, log = console.
     let cursor;
     do {
       const params = { page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) };
-      const result = await request(route, method, method === 'get' ? undefined : { ...body, ...params }, method === 'get' ? params : undefined);
+      const result = await notionRequest(route, method, method === 'get' ? undefined : { ...body, ...params }, method === 'get' ? params : undefined);
       rows.push(...result.results);
       if (result.has_more && (!result.next_cursor || result.next_cursor === cursor)) throw new Error('Invalid pagination cursor');
       cursor = result.has_more ? result.next_cursor : null;
     } while (cursor);
     return rows;
   }
-  const schema = await request(`data_sources/${CONTENT}`);
+  const schema = await notionRequest(`data_sources/${CONTENT}`);
   if (schema.properties?.Tags?.type !== 'multi_select') throw new Error('Tags must be a multi-select property');
   if (schema.properties?.Type?.type !== 'select') throw new Error('Type must be a select property');
   if (schema.properties?.URL?.type !== 'url') throw new Error('URL must be a URL property');
   const relation = schema.properties?.Activity;
   if (relation?.type !== 'relation' || normalize(relation.relation?.data_source_id) !== normalize(ACTIVITIES)) throw new Error('Activity relation does not target activities-db');
-  const activitiesSchema = await request(`data_sources/${ACTIVITIES}`);
+  const activitiesSchema = await notionRequest(`data_sources/${ACTIVITIES}`);
   if (activitiesSchema.properties?.findings_url?.type !== 'url') throw new Error('findings_url must be a URL property');
   if (activitiesSchema.properties?.findings_synced_at?.type !== 'date') throw new Error('findings_synced_at must be a Date property');
   const activities = await list(`data_sources/${ACTIVITIES}/query`, 'post');
@@ -112,8 +129,10 @@ async function migrate({ request, state, save, env = process.env, log = console.
     try {
       let found = 0, liveSources = 0, scanned = 0;
       for (const source of contentSources) {
-        log(`${prefix} Scanning content page ${++scanned}/${contentSources.size}`);
-        const parent = await request(`pages/${source}`);
+        const sourceNumber = ++scanned;
+        log(`${prefix} Scanning content page ${sourceNumber}/${contentSources.size}`);
+        errorPrefix = `${prefix} [content: #${sourceNumber} https://notion.so/${source}]`;
+        const parent = await notionRequest(`pages/${source}`);
         const title = Object.values(parent.properties || {}).find(property => Array.isArray(property.title))?.title || [];
         const name = env.GITHUB_ACTIONS === 'true' ? `#${scanned}` : title.map(part => part.plain_text || part.text?.content || '').join('').replace(/[\r\n\x1b]/g, ' ') || '(untitled)';
         const contentPrefix = `${prefix} [content: ${name}]`;
@@ -146,7 +165,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
       progress();
       const migratePage = async (id, job) => {
         // Fresh findings were just listed under the source; only recovery needs a pre-read.
-        let page = state[id] ? await request(`pages/${id}`) : { parent: { page_id: job.source } };
+        let page = state[id] ? await notionRequest(`pages/${id}`) : { parent: { page_id: job.source } };
         if (page.archived || page.in_trash) {
           skippedFindings++;
           handled++;
@@ -158,7 +177,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
         const prop = page.properties?.Activity;
         const related = prop?.relation || [];
         if (prop?.has_more || related.some(r => normalize(r.id) !== job.activity)) throw new Error('Candidate has a conflicting Activity relation');
-        const first = await request(`blocks/${id}/children`, 'get', undefined, { page_size: 1 });
+        const first = await notionRequest(`blocks/${id}/children`, 'get', undefined, { page_size: 1 });
         const url = leadingUrl(first.results[0]);
         const metadataMatches = page.properties?.Type?.select?.name === 'Article' && (!url || page.properties?.URL?.url === url);
         if (metadataMatches && inTarget && related.some(r => normalize(r.id) === job.activity) && page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) {
@@ -172,17 +191,17 @@ async function migrate({ request, state, save, env = process.env, log = console.
         state[id] = job;
         journalQueue = journalQueue.then(() => save(state));
         await journalQueue; // Serialize durable intent before each move.
-        if (!inTarget) await request(`pages/${id}/move`, 'post', { parent: { type: 'data_source_id', data_source_id: CONTENT } });
+        if (!inTarget) await notionRequest(`pages/${id}/move`, 'post', { parent: { type: 'data_source_id', data_source_id: CONTENT } });
         // Read after moving so destination tags/defaults are preserved too.
-        if (!inTarget) page = await request(`pages/${id}`);
+        if (!inTarget) page = await notionRequest(`pages/${id}`);
         const tags = [...new Set([...(page.properties?.Tags?.multi_select || []).map(tag => tag.name), 'migration'])];
-        await request(`pages/${id}`, 'patch', { properties: {
+        await notionRequest(`pages/${id}`, 'patch', { properties: {
           Activity: { relation: [{ id: job.activity }] },
           Tags: { multi_select: tags.map(name => ({ name })) },
           Type: { select: { name: 'Article' } },
           ...(url ? { URL: { url } } : {}),
         } });
-        page = await request(`pages/${id}`);
+        page = await notionRequest(`pages/${id}`);
         if (normalize(page.parent?.data_source_id) !== normalize(CONTENT) || page.properties?.Activity?.relation?.length !== 1 || normalize(page.properties.Activity.relation[0].id) !== job.activity || !page.properties?.Tags?.multi_select?.some(tag => tag.name === 'migration')) throw new Error('Post-write verification failed');
         if (page.properties?.Type?.select?.name !== 'Article' || (url && page.properties?.URL?.url !== url)) throw new Error('Content metadata verification failed');
         await forget(id);
@@ -210,7 +229,7 @@ async function migrate({ request, state, save, env = process.env, log = console.
       const verified = counts.verified - before.verified;
       if (pending === completed) {
         log(`${prefix} ${jobs.size === 0 ? 'No findings; updating' : 'Updating'} last-sync timestamp…`);
-        await request(`pages/${activity}`, 'patch', { properties: { findings_synced_at: { date: { start: new Date().toISOString() } } } });
+        await notionRequest(`pages/${activity}`, 'patch', { properties: { findings_synced_at: { date: { start: new Date().toISOString() } } } });
       }
       log(`${prefix} Done: moved ${completed}, already migrated ${verified}`);
     } catch (error) {
@@ -256,16 +275,14 @@ async function main() {
   const counts = await migrate({ request, state, save,
     log: console.log,
     onError: (prefix, error) => {
-      console.error(process.env.GITHUB_ACTIONS === 'true'
-        ? `Activity failed (${error.code || error.status || 'validation'}); continuing with next activity`
-        : `${prefix} Failed: ${error.message}; continuing with next activity`);
+      console.error(`${prefix} Failed: ${formatError(error)}; continuing with next activity`);
       process.exitCode = 1;
     },
   });
   console.log(JSON.stringify(counts));
 }
-module.exports = { migrate, pageId, extraSources, leadingUrl };
+module.exports = { migrate, pageId, extraSources, leadingUrl, formatError };
 if (require.main === module) main().catch(error => {
-  console.error(`Migration failed (${error.code || error.status || (process.env.GITHUB_ACTIONS === 'true' ? 'validation' : error.message)}). On hosted runs, an interrupted move may require manual Activity repair; local journal retained.`);
+  console.error(`Migration failed: ${formatError(error)}. On hosted runs, an interrupted move may require manual Activity repair; local journal retained.`);
   process.exitCode = 1;
 });
